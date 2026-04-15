@@ -26,7 +26,7 @@ TypeId SwitchNode::GetTypeId (void)
 	                    .SetParent<Node> ()
 	                    .AddConstructor<SwitchNode> ()
 	                    .AddAttribute("EcnEnabled",
-	                                  "Enable ECN marking.",
+	                                  "Enable ECN marking.",//开启ECN标记！！！
 	                                  BooleanValue(false),
 	                                  MakeBooleanAccessor(&SwitchNode::m_ecnEnabled),
 	                                  MakeBooleanChecker())
@@ -168,6 +168,14 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch) {
 			}
 			CheckAndSendPfc(inDev, qIndex);
 		}
+
+
+		// ========== 新增：调用SwitchNotifyEnqueue！！！ ==========
+		// 在数据包发送到设备之前调用入队通知
+		SwitchNotifyEnqueue(idx, qIndex, p,ch);
+		// ==================================================
+
+
 		m_bytes[inDev][idx][qIndex] += p->GetSize();
 		m_devices[idx]->SwitchSend(qIndex, p, ch);
 		DynamicCast<QbbNetDevice>(m_devices[idx])->totalBytesRcvd += p->GetSize(); // Attention: this is the egress port's total received packets. Not the ingress port.
@@ -214,6 +222,43 @@ uint32_t SwitchNode::EcmpHash(const uint8_t* key, size_t len, uint32_t seed) {
 	return h;
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// YRNK_METHOD
+// 计算流量的哈希指纹
+// 五元组+对应FCS模块的interval_seq
+// 五元组<source ip, destination ip,source port, destination port, protocol>
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint32_t SwitchNode::FingerPrintHash(Ptr<Packet>p,CustomHeader &ch,uint32_t interval_seq){
+	Ptr<Packet> cp = p->Copy();
+
+	PppHeader ph; cp->RemoveHeader(ph);
+	Ipv4Header ih; cp->RemoveHeader(ih);
+
+	uint32_t src_ip = ih.GetSource().Get();
+	uint32_t dest_ip = ih.GetDestination().Get();
+
+	uint32_t protocol = ch.l3Prot;
+	uint16_t src_port = 0, dest_port = 0;
+    if (protocol == 0x06) {        // TCP
+        src_port = ch.tcp.sport;
+        dest_port = ch.tcp.dport;
+    } else if (protocol == 0x11) { // UDP
+        src_port = ch.udp.sport;
+        dest_port = ch.udp.dport;
+    }
+
+	uint8_t buf[20];
+    uint8_t* p_buf = buf;
+    *(uint32_t*)p_buf = src_ip;      p_buf += 4;
+    *(uint32_t*)p_buf = dest_ip;     p_buf += 4;
+    *(uint16_t*)p_buf = src_port;    p_buf += 2;
+    *(uint16_t*)p_buf = dest_port;   p_buf += 2;
+    *p_buf++ = protocol;
+    *(uint32_t*)p_buf = interval_seq;
+
+    return EcmpHash(buf, 17, 0);   // 总长度 4+4+2+2+1+4 = 17 字节
+}
+
 void SwitchNode::SetEcmpSeed(uint32_t seed) {
 	m_ecmpSeed = seed;
 }
@@ -233,6 +278,11 @@ bool SwitchNode::SwitchReceiveFromDevice(Ptr<NetDevice> device, Ptr<Packet> pack
 	return true;
 }
 
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// YRNK_METHOD
+// 出队更新
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p) {
 	InterfaceTag t;
 	p->PeekPacketTag(t);
@@ -246,7 +296,13 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 		m_mmu->RemoveFromEgressAdmission(ifIndex, qIndex, p->GetSize(), found);
 		m_bytes[inDev][ifIndex][qIndex] -= p->GetSize();
 		if (m_ecnEnabled) {
-			bool egressCongested = m_mmu->ShouldSendCN(ifIndex, qIndex);
+			/////////////////////////////////////////////////////////////////////////////////////////////////
+			// YRNK_CHANGE
+			// 改一下，用red的函数
+			// bool egressCongested = m_mmu->ShouldSendCN(ifIndex, qIndex);
+			bool egressCongested = m_mmu->RedShouldDropPacket(ifIndex, qIndex);
+			// 当然，实际上是标记packet，而并非drop，此处red与ecn结合
+			/////////////////////////////////////////////////////////////////////////////////////////////////
 			if (egressCongested) {
 				PppHeader ppp;
 				Ipv4Header h;
@@ -256,6 +312,12 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 				p->AddHeader(h);
 				p->AddHeader(ppp);
 			}
+			/////////////////////////////////////////////////////////////////////////////////////////////////////
+			// YRNK_COUT
+			// 用于输出
+			std::cout<<"<<DEQUEUE==> Is marked? ["<<egressCongested<<"], and here's the pack:"<<std::endl;
+			p->Print(std::cout);
+			/////////////////////////////////////////////////////////////////////////////////////////////////////
 		}
 		//CheckAndSendPfc(inDev, qIndex);
 		CheckAndSendResume(inDev, qIndex);
@@ -367,6 +429,43 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 	m_lastPktSize[ifIndex] = p->GetSize();
 	m_lastPktTs[ifIndex] = Simulator::Now().GetTimeStep();
 }
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// YRNK_METHOD
+// 入队更新
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void SwitchNode::SwitchNotifyEnqueue(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p,CustomHeader &ch) {
+    // ... 现有代码 ...
+	InterfaceTag t;
+	p->PeekPacketTag(t);
+
+	MyPriorityTag priotag;
+	// bool found = p->PeekPacketTag(priotag);
+
+    if (qIndex != 0) {
+        // 入队后更新队列长度
+		uint32_t inDev = t.GetPortId();
+        m_bytes[inDev][ifIndex][qIndex] += p->GetSize();
+
+        // 更新平均队列长度
+        m_mmu->UpdateAvgQueue(ifIndex, qIndex);
+    }
+
+	//计算流量的哈希指纹
+	uint32_t intervalSeq = m_mmu->GetIntervalSeq(ifIndex,qIndex);//获取intervalSeq
+	uint32_t fingerPrint = FingerPrintHash(p,ch,intervalSeq);//计算指纹
+
+	/////////////////////////////////////////////////////////////////////////////////////////////////////
+	// YRNK_COUT
+	// 用于输出
+	std::cout<<">>ENQUEUE==> Sth got inside, and here's the pack:"<<std::endl;
+	p->Print(std::cout);
+	/////////////////////////////////////////////////////////////////////////////////////////////////////
+}
+
+// // 入队回调类型
+// typedef Callback<void, uint32_t, uint32_t, Ptr<Packet>> EnqueueCallback;
+// void SetEnqueueCallback(EnqueueCallback cb) { m_enqueueCallback = cb; }
 
 int SwitchNode::logres_shift(int b, int l) {
 	static int data[] = {0, 0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5};

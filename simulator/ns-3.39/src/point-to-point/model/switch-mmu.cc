@@ -55,6 +55,7 @@ similarly `egressPool[LOSSLESS]` for lossless traffic.
 
 SwitchMmu::SwitchMmu(void) {
 
+	// 用于初始化！！！
 	// Here we just initialize some default values.
 	// The buffer can be configured using Set functions through the simulation file later.
 
@@ -110,6 +111,11 @@ SwitchMmu::SwitchMmu(void) {
 			ingressLpf_bytes[port][q] = 0;
 			egressLpf_bytes[port][q] = 0;
 
+			////////////////////////////////////////////////////////////////////////////////////////////////////////
+			//////////初始化平均队列长度avgq
+			////////////////////////////////////////////////////////////////////////////////////////////////////////
+			avg_egress_bytes[port][q] = 0;
+
 			// ABM related variables
 			congestedIngress[port][q] = 0; // This keeps track of the number of congested queues at the ingress
 			congestedEgress[port][q] = 0; // This keeps track of the number of congested queues at the egress
@@ -138,6 +144,11 @@ SwitchMmu::SwitchMmu(void) {
 	memset(ingress_bytes, 0, sizeof(ingress_bytes));
 	memset(paused, 0, sizeof(paused));
 	memset(egress_bytes, 0, sizeof(egress_bytes));
+
+	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	/////////虽然不明白，但是我觉得这里也要对平均队长avgq进行一个memset
+	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	memset(avg_egress_bytes, 0, sizeof(avg_egress_bytes));
 
 	dequeueUpdatedOnce = 0; // For ABM, to trigger dequeue rate updates
 	lpfUpdatedOnce = 0; // For Reverie, LPF updates
@@ -563,7 +574,7 @@ uint64_t SwitchMmu::ReverieThreshold(uint32_t port, uint32_t qIndex, uint32_t ty
 			satLevel = 1;
 		}
 		setCongested(port, qIndex, "ingress", satLevel);
-		
+
 		// uint64_t ingressPoolSharedUsed = GetIngressSharedUsed(); // Total bytes used from the ingress "shared" pool specifically.
 		// uint64_t ingressSharedPool = ingressPool - totalIngressReserved;
 		// if (ingressSharedPool > ingressPoolSharedUsed) {
@@ -1032,22 +1043,206 @@ void SwitchMmu::SetResume(uint32_t port, uint32_t qIndex) {
 	paused[port][qIndex] = false;
 }
 
-bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex) {
-	if (qIndex == 0)
+/*
+算法：RED
+*/
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// 核心算法 MAIN！！！
+// 采用与ECN结合的RED算法
+// DROP实则为MARK
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+bool SwitchMmu::RedShouldDropPacket(uint32_t ifindex, uint32_t qIndex){
+	if (qIndex == 0)//队列长==0
 		return false;
-	if (egress_bytes[ifindex][qIndex] > kmax[ifindex])
+
+	double avgq = avg_egress_bytes[ifindex][qIndex];
+
+	if (avgq > kmax[ifindex]){//大于上阈直接丢包
+		count[ifindex][qIndex]=0;
 		return true;
-	if (egress_bytes[ifindex][qIndex] > kmin[ifindex]) {
-		double p = pmax[ifindex] * double(egress_bytes[ifindex][qIndex] - kmin[ifindex]) / (kmax[ifindex] - kmin[ifindex]);
-		if (UniformVariable(0, 1).GetValue() < p)
+	}else if (avgq > kmin[ifindex]) {//上下阈间概率丢包
+		count[ifindex][qIndex]++;
+
+		//基础概率公式
+		/*
+			计算丢包概率
+			Pdrop=Pmax*(AVGq-MinTh)/(MaxTh-MinTh)
+		*/
+		double pb = pmax[ifindex] * double(avgq - kmin[ifindex]) / (kmax[ifindex] - kmin[ifindex]);
+
+		//调整概率：避免连续丢包
+		double pa = pb / (1.0 - count[ifindex][qIndex] * pb);
+
+		//避免概率超出正常范围
+		if (pa < 0.0) pa = 0.0;
+		if (pa > 1.0) pa = 1.0;
+
+		if (UniformVariable(0, 1).GetValue() < pa){//概率内丢包
+			count[ifindex][qIndex]=0;
 			return true;
+		}
+	}else{//小于下阈不丢包
+		count[ifindex][qIndex]=0;
+		return false;
 	}
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// 更新平均队列长度
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void SwitchMmu::UpdateAvgQueue(uint32_t ifindex, uint32_t qIndex) {
+        if (qIndex == 0) return;
+
+        uint32_t current_qlen = egress_bytes[ifindex][qIndex];
+
+        // EWMA公式：avg = (1 - wq) * avg + wq * current_qlen
+        double old_avg = avg_egress_bytes[ifindex][qIndex];
+        avg_egress_bytes[ifindex][qIndex] =
+            (1.0 - wq[ifindex]) * old_avg + wq[ifindex] * current_qlen;
+
+        // 防止avg太小导致下溢出【AI说是可选？？】
+        if (avg_egress_bytes[ifindex][qIndex] < 1.0) {
+            avg_egress_bytes[ifindex][qIndex] = 1.0;
+        }
+    }
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// 获取平均队列长度
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+double SwitchMmu::GetAvgQueueLength(uint32_t ifindex, uint32_t qIndex) {
+	return avg_egress_bytes[ifindex][qIndex];
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// 获取瞬时队列长度
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+uint32_t SwitchMmu::GetCurrentQueueLength(uint32_t ifindex, uint32_t qIndex) {
+	return egress_bytes[ifindex][qIndex];
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// 初始化RED算法的参数
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+void SwitchMmu::InitRed(uint32_t port) {
+	for (uint32_t q = 0; q < qCnt; q++) {
+		avg_egress_bytes[port][q] = 0.0;
+		count[port][q] = 0;
+	}
+	wq[port] = 0.002;  // 默认权重
+}
+
+
+
+bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex) {//基础RED来源================================================
+	if (qIndex == 0)//队列长==0
+		return false;
+	if (egress_bytes[ifindex][qIndex] > kmax[ifindex])//大于上阈直接标记
+		return true;
+	if (egress_bytes[ifindex][qIndex] > kmin[ifindex]) {//上下阈间概率标记
+		double p = pmax[ifindex] * double(egress_bytes[ifindex][qIndex] - kmin[ifindex]) / (kmax[ifindex] - kmin[ifindex]);
+		/*
+		计算丢包概率
+		Pdrop=Pmax*(AVGq-MinTh)/(MaxTh-MinTh)
+		此处实际上是
+		Pmark=Pmax*(q-MinTh)/(MaxTh-MinTh)
+		*/
+		if (UniformVariable(0, 1).GetValue() < p)//概率内标记
+			return true;
+	}//小于下阈不标记
 	return false;
 }
+
+void SwitchMmu::ConfigEcnNew(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax, double _wq = 0.002) {
+	kmin[port] = _kmin * 1000;
+	kmax[port] = _kmax * 1000;
+	pmax[port] = _pmax;
+
+	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	// 以下为针对RED算法的新增配置
+	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+	wq[port] = _wq;
+
+	// 初始化平均队列长度
+	InitRed(port);
+}
+
 void SwitchMmu::ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax) {
 	kmin[port] = _kmin * 1000;
 	kmax[port] = _kmax * 1000;
 	pmax[port] = _pmax;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// YRNK_ADD
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//懒加载方式更新FCS状态
+void SwitchMmu::UpdateFcsStats(uint32_t port, uint32_t queue, uint32_t fingerprint,uint64_t now_ns){
+	auto& fcs = GetFcsState(port,queue);
+	double Tfcs_ns = GetTFCS(
+		GetPortRTT_ns(port)
+	);
+
+	double timeDistance = now_ns - fcs.last_reset_ns;
+
+	if (timeDistance > Tfcs_ns) {//间隔超过一周期？
+		//计算超过周期数
+		uint32_t passedCycles = timeDistance/Tfcs_ns;//直接除法计算
+
+		fcs.interval_seq += passedCycles;
+
+        fcs.last_reset_ns = now_ns;
+        // fcs.n_last = fcs.n_current;
+		//跳过多个周期，那么这几个周期的n current都是0，因为没有流量，直接nlast=0
+		fcs.n_last=0;
+
+        fcs.n_current = 0;
+        //位图不清零
+    }
+
+	//正常新流检测（如果有包到达）
+    uint32_t sid = fingerprint & ((1 << FcsState::INDEX_SIZE) - 1);//对2^INDEX_SIZE取余数，得到位图id
+
+	//怎么存哈希
+
+    uint64_t hold = fcs.bitmap[sid];//获取当前sid槽位的值
+    fcs.bitmap[sid] = fingerprint;//先写入
+    if (fingerprint != hold) {//不一致判定为新流量
+        fcs.n_current++;
+    }
+	//此处不考虑哈希冲突的解决
+}
+
+//更新QLA
+void SwitchMmu::UpdateQlaStats(uint32_t port, uint32_t queue, uint32_t pktSize, uint32_t curQlenPkts, uint64_t now_ns, uint64_t rtt_ns){
+	auto& qla = GetQlaState(port,queue);
+	double Tqla_ns = GetTQLA(
+		GetPortRTT_ns(port)
+	);
+
+	double updateTimeDistance = now_ns - qla.last_update_ns;
+	if(updateTimeDistance >= Tqla_ns){//超过qla周期，或者说一个相位，就直接重置当前QLA循环
+		qla.phase_start_ns = now_ns;
+		qla.last_update_ns = now_ns;
+		return;
+	}
+
+	// double cycleTimeDistance = now_ns - qla.phase_start_ns;
+
+	//第一次开始时
+	if(qla.phase_start_ns == 0){
+		qla.InitFirstStart(now_ns);
+        // qla.lambda_base = qla.lambda_base;
+	}
+
+	//数据的更新
+	qla.phase_tx_bytes += pktSize;
+    qla.phase_qlen_sum += curQlenPkts;
+    qla.phase_qlen_cnt++;
+
+	qla.IncreasePhase();
+
 }
 
 }
