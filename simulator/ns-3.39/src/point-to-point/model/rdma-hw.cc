@@ -13,6 +13,9 @@
 #include "qbb-header.h"
 #include "cn-header.h"
 #include "ns3/unsched-tag.h"
+#include "ns3/log.h"
+
+NS_LOG_COMPONENT_DEFINE("RdmaHw");
 
 namespace ns3 {
 
@@ -327,7 +330,7 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
 		rxQp->m_ecn_source.qfb++;
 	}
 	rxQp->m_ecn_source.total++;
-	rxQp->m_milestone_rx = m_ack_interval;
+	rxQp->m_milestone_rx = m_ack_interval; // ==1
 
 	int x = ReceiverCheckSeq(ch.udp.seq, rxQp, payload_size);
 	if (x == 1 || x == 2) { //generate ACK or NACK
@@ -388,7 +391,7 @@ int RdmaHw::ReceiveCnp(Ptr<Packet> p, CustomHeader &ch) {
 	if (qp->m_rate == 0)			//lazy initialization
 	{
 		qp->m_rate = dev->GetDataRate();
-		if (m_cc_mode == 1) {
+		if (m_cc_mode == 1) {  //dcqcn
 			qp->mlx.m_targetRate = dev->GetDataRate();
 		} else if (m_cc_mode == 3) {
 			qp->hp.m_curRate = dev->GetDataRate();
@@ -473,17 +476,17 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
 	uint32_t expected = q->ReceiverNextExpectedSeq;
 	if (seq == expected) {
 		q->ReceiverNextExpectedSeq = expected + size;
-		if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx) {
-			q->m_milestone_rx += m_ack_interval;
+		if (q->ReceiverNextExpectedSeq >= q->m_milestone_rx) { //m_milestone_rx初始值为1
+			q->m_milestone_rx += m_ack_interval; //m_ack_interval=1
 			return 1; //Generate ACK
-		} else if (q->ReceiverNextExpectedSeq % m_chunk == 0) {
+		} else if (q->ReceiverNextExpectedSeq % m_chunk == 0) { //m_chunk默认值是4000
 			return 1;
 		} else {
 			return 5;
 		}
-	} else if (seq > expected) {
+	} else if (seq > expected) { // 
 		// Generate NACK
-		if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected) {
+		if (Simulator::Now() >= q->m_nackTimer || q->m_lastNACK != expected) { // m_nackTimer==0 该条件必然成立
 			q->m_nackTimer = Simulator::Now() + MicroSeconds(m_nack_interval);
 			q->m_lastNACK = expected;
 			if (m_backto0) {
@@ -492,7 +495,7 @@ int RdmaHw::ReceiverCheckSeq(uint32_t seq, Ptr<RdmaRxQueuePair> q, uint32_t size
 			return 2;
 		} else
 			return 4;
-	} else {
+	} else {  // ？？？？进到这儿了？
 		// Duplicate.
 		return 3;
 	}
@@ -621,7 +624,6 @@ void RdmaHw::PktSent(Ptr<RdmaQueuePair> qp, Ptr<Packet> pkt, Time interframeGap)
 	uint32_t seq = qp->snd_nxt;
 	qp->rates[qp->snd_nxt] = Simulator::Now().GetNanoSeconds();
 	UpdateNextAvail(qp, interframeGap, pkt->GetSize());
-
 }
 
 void RdmaHw::UpdateNextAvail(Ptr<RdmaQueuePair> qp, Time interframeGap, uint32_t pkt_size) {
@@ -631,6 +633,9 @@ void RdmaHw::UpdateNextAvail(Ptr<RdmaQueuePair> qp, Time interframeGap, uint32_t
 	else
 		sendingTime = interframeGap + qp->m_max_rate.CalculateBytesTxTime(pkt_size);
 	qp->m_nextAvail = Simulator::Now() + sendingTime;
+	// std::cout<<Simulator::Now() << " QpSendingTime "<<" qp-sip "<<std::hex<< qp->sip.Get() << " qp-dip "<<std::hex<< qp->dip.Get() 
+	// 	<< " qp-sport "<< qp->sport << " qp-dport "<< qp->dport << " rate "<< qp->m_rate.GetBitRate() * 1e-9<< std::endl;
+
 }
 
 void RdmaHw::ChangeRate(Ptr<RdmaQueuePair> qp, DataRate new_rate) {
@@ -655,11 +660,14 @@ void RdmaHw::UpdateAlphaMlx(Ptr<RdmaQueuePair> q) {
 	//std::cout << Simulator::Now() << " alpha update:" << m_node->GetId() << ' ' << q->mlx.m_alpha << ' ' << (int)q->mlx.m_alpha_cnp_arrived << '\n';
 	//printf("%lu alpha update: %08x %08x %u %u %.6lf->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_alpha);
 #endif
+
+	printf("%lu %s %08x %08x %u %u [%u,%u,%u] %.3lf->", Simulator::Now().GetTimeStep(), "DCQCN-alpha", q->sip.Get(), q->dip.Get(), q->sport, q->dport, 0, 0, 0, q->mlx.m_alpha);
 	if (q->mlx.m_alpha_cnp_arrived) {
 		q->mlx.m_alpha = (1 - m_g) * q->mlx.m_alpha + m_g; 	//binary feedback
 	} else {
 		q->mlx.m_alpha = (1 - m_g) * q->mlx.m_alpha; 	//binary feedback
 	}
+	printf("%.3lf F:%.3lf\n", q->mlx.m_alpha, 0);
 #if PRINT_LOG
 	//printf("%.6lf\n", q->mlx.m_alpha);
 #endif
@@ -693,12 +701,14 @@ void RdmaHw::CheckRateDecreaseMlx(Ptr<RdmaQueuePair> q) {
 #if PRINT_LOG
 		printf("%lu rate dec: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
 #endif
+		printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "DCQCN-rate-decrease", q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->m_rate.GetBitRate() * 1e-9);
+
 		bool clamp = true;
-		if (!m_EcnClampTgtRate) {
-			if (q->mlx.m_rpTimeStage == 0)
+		if (!m_EcnClampTgtRate) { //  m_EcnClampTgtRate == 0
+			if (q->mlx.m_rpTimeStage == 0) // 在加速时才会>0； 
 				clamp = false;
 		}
-		if (clamp)
+		if (clamp) //在减速时，clamp=false， 不更新targetrate
 			q->mlx.m_targetRate = q->m_rate;
 		q->m_rate = std::max(m_minRate, q->m_rate * (1 - q->mlx.m_alpha / 2));
 		// reset rate increase related things
@@ -706,6 +716,9 @@ void RdmaHw::CheckRateDecreaseMlx(Ptr<RdmaQueuePair> q) {
 		q->mlx.m_decrease_cnp_arrived = false;
 		Simulator::Cancel(q->mlx.m_rpTimer);
 		q->mlx.m_rpTimer = Simulator::Schedule(MicroSeconds(m_rpgTimeReset), &RdmaHw::RateIncEventTimerMlx, this, q);
+		
+		printf("%.3lf\n", q->m_rate.GetBitRate() * 1e-9);
+
 #if PRINT_LOG
 		printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
 #endif
@@ -722,6 +735,8 @@ void RdmaHw::RateIncEventTimerMlx(Ptr<RdmaQueuePair> q) {
 }
 void RdmaHw::RateIncEventMlx(Ptr<RdmaQueuePair> q) {
 	// check which increase phase: fast recovery, active increase, hyper increase
+	printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "DCQCN-rate-increase", q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->m_rate.GetBitRate() * 1e-9);
+
 	if (q->mlx.m_rpTimeStage < m_rpgThreshold) { // fast recovery
 		FastRecoveryMlx(q);
 	} else if (q->mlx.m_rpTimeStage == m_rpgThreshold) { // active increase
@@ -729,6 +744,8 @@ void RdmaHw::RateIncEventMlx(Ptr<RdmaQueuePair> q) {
 	} else { // hyper increase
 		HyperIncreaseMlx(q);
 	}
+	printf("%.3lf\n", q->m_rate.GetBitRate() * 1e-9);
+
 }
 
 void RdmaHw::FastRecoveryMlx(Ptr<RdmaQueuePair> q) {
@@ -1184,50 +1201,46 @@ void RdmaHw::HandleAckDctcp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &
 	// update alpha
 	qp->dctcp.m_ecnCnt += (cnp > 0);
 	if (ack_seq > qp->dctcp.m_lastUpdateSeq) { // if full RTT feedback is ready, do alpha update
-#if PRINT_LOG
-		printf("%lu %s %08x %08x %u %u [%u,%u,%u] %.3lf->", Simulator::Now().GetTimeStep(), "alpha", qp->sip.Get(), qp->dip.Get(), qp->sport, qp->dport, qp->dctcp.m_lastUpdateSeq, ch.ack.seq, qp->snd_nxt, qp->dctcp.m_alpha);
-#endif
+		printf("%lu %s %08x %08x %u %u [%u,%u,%u] %.3lf->", Simulator::Now().GetTimeStep(), "DCTCP-alpha", qp->sip.Get(), qp->dip.Get(), qp->sport, qp->dport, qp->dctcp.m_lastUpdateSeq, ch.ack.seq, qp->snd_nxt, qp->dctcp.m_alpha);
 		new_batch = true;
 		if (qp->dctcp.m_lastUpdateSeq == 0) { // first RTT
 			qp->dctcp.m_lastUpdateSeq = qp->snd_nxt;
 			qp->dctcp.m_batchSizeOfAlpha = qp->snd_nxt / m_mtu + 1;
 		} else {
-			double frac = std::min(1.0, double(qp->dctcp.m_ecnCnt) / qp->dctcp.m_batchSizeOfAlpha);
+			double frac = std::min(1.0, double(qp->dctcp.m_ecnCnt) / qp->dctcp.m_batchSizeOfAlpha);  //按ECN比例调α，100%减速最狠。
 			qp->dctcp.m_alpha = (1 - m_g) * qp->dctcp.m_alpha + m_g * frac;
 			qp->dctcp.m_lastUpdateSeq = qp->snd_nxt;
 			qp->dctcp.m_ecnCnt = 0;
 			qp->dctcp.m_batchSizeOfAlpha = (qp->snd_nxt - ack_seq) / m_mtu + 1;
-#if PRINT_LOG
 			printf("%.3lf F:%.3lf", qp->dctcp.m_alpha, frac);
-#endif
 		}
-#if PRINT_LOG
 		printf("\n");
-#endif
 	}
 
-	// check cwr exit
+	// check cwr exit （Congestion Window Recovery, CWR）
 	if (qp->dctcp.m_caState == 1) {
-		if (ack_seq > qp->dctcp.m_highSeq)
+		if (ack_seq > qp->dctcp.m_highSeq)  // 每RTT更新速率
 			qp->dctcp.m_caState = 0;
 	}
+	// m_caState == 1：表示当前处于拥塞窗口恢复状态（CWR）。在这种状态下，发送速率可能已经因为拥塞信号（如 ECN 标记）而降低。
+
 
 	// check if need to reduce rate: ECN and not in CWR
-	if (cnp && qp->dctcp.m_caState == 0) {
-#if PRINT_LOG
-		printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "rate", qp->sip.Get(), qp->dip.Get(), qp->sport, qp->dport, qp->m_rate.GetBitRate() * 1e-9);
-#endif
+	if (cnp && qp->dctcp.m_caState == 0) {  //每个RTT只能减速一次
+		printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "DCTCP-rate-decrease", qp->sip.Get(), qp->dip.Get(), qp->sport, qp->dport, qp->m_rate.GetBitRate() * 1e-9);
 		qp->m_rate = std::max(m_minRate, qp->m_rate * (1 - qp->dctcp.m_alpha / 2));
-#if PRINT_LOG
+		qp->dctcp.m_caState = 1; 
+		qp->dctcp.m_highSeq = qp->snd_nxt; // 拥塞降速状态持续一个RTT（caState=1）
 		printf("%.3lf\n", qp->m_rate.GetBitRate() * 1e-9);
-#endif
-		qp->dctcp.m_caState = 1;
-		qp->dctcp.m_highSeq = qp->snd_nxt;
 	}
 
 	// additive inc
-	if (qp->dctcp.m_caState == 0 && new_batch)
+	if (qp->dctcp.m_caState == 0 && new_batch){ //非拥塞降速阶段，每个RTT只能加速一次
+		printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "DCTCP-rate-increase", qp->sip.Get(), qp->dip.Get(), qp->sport, qp->dport, qp->m_rate.GetBitRate() * 1e-9);
 		qp->m_rate = std::min(qp->m_max_rate, qp->m_rate + m_dctcp_rai);
+		printf("%.3lf\n", qp->m_rate.GetBitRate() * 1e-9);
+	}
+
 }
 
 /*********************

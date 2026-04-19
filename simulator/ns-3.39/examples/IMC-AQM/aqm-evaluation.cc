@@ -16,7 +16,20 @@
 #undef PGO_TRAINING
 #define PATH_TO_PGO_CONFIG "path_to_pgo_config"
 
-#define RED_CC_MOD 1
+/*Active Queue Management Algorithms*/
+#define RED 1
+#define CoDel 2
+#define MATCP 3
+#define CEDM 4
+#define MBECN 5
+#define PRED 6
+#define IMCAQM 7
+
+/*Congestion Control Algorithms*/
+#define DCQCN 1
+#define DCTCP 8
+#define HPCC 3
+
 
 #include <iostream>
 #include <fstream>
@@ -35,13 +48,7 @@
 #include <ns3/rdma-client.h>
 #include <ns3/rdma-client-helper.h>
 #include <ns3/rdma-driver.h>
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// 将原switch-node.h切换为我所更改的p2p模型的头文件
 #include <ns3/switch-node.h>
-// #include "/home/wk/Reverie-Platform/ns3-datacenter/simulator/ns-3.39/src/point-to-point/model/switch-node.h"
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 #include <ns3/sim-setting.h>
 
 using namespace ns3;
@@ -50,6 +57,7 @@ using namespace std;
 NS_LOG_COMPONENT_DEFINE("GENERIC_SIMULATION");
 
 uint32_t cc_mode = 1;
+uint32_t aqm_mode = 1;
 bool enable_qcn = true;
 uint32_t packet_payload_size = 1000, l2_chunk_size = 0, l2_ack_interval = 0;
 double pause_time = 5, simulator_stop_time = 3.01;
@@ -403,39 +411,29 @@ int main(int argc, char *argv[])
 	clock_t begint, endt;
 	begint = clock();
 		std::ifstream conf;
-		bool wien = true; // wien enables PowerTCP.
+		bool wien = false; // wien enables PowerTCP.
 		bool delayWien = false; // delayWien enables Theta-PowerTCP (delaypowertcp)
 
 		uint32_t algorithm=3;
 		uint32_t windowCheck=1;
 
+		uint32_t aqm_algorithm = RED;
 
-		///////////////////////////////////////////////////////////////////////////////////////////////////////////
-		//修改config-fairness，改成config-RED
 		// std::string confFile = "/home/vamsi/src/phd/codebase/ns3-datacenter/simulator/ns-3.39/examples/PowerTCP/config-fairness.txt";
-		std::string confFile = "/home/wk/Reverie-Platform/ns3-datacenter/simulator/ns-3.39/examples/PRED/config-RED-2to1.txt";
+		std::string confFile = "/home/wk/Reverie-Platform/WK_IMC-AQM/simulator/ns-3.39/examples/IMC-AQM/config-2to1.txt";
 
-		// std::cout << confFile<<"\n";
 		CommandLine cmd;
-
-		//////////////////////////////////////////////////////////////////////////////////////////////////////////
-		// 插入RED相关cmd参数
-		double redMinTh = 5.0;    // RED最小阈值（KB）
-		double redMaxTh = 15.0;   // RED最大阈值（KB）
-		double redMaxP = 0.1;     // RED最大标记概率
-		double redWq = 0.002;     // RED队列权重
-		cmd.AddValue("redMinTh", "RED minimum threshold (KB)", redMinTh);
-		cmd.AddValue("redMaxTh", "RED maximum threshold (KB)", redMaxTh);
-		cmd.AddValue("redMaxP", "RED maximum probability", redMaxP);
-		cmd.AddValue("redWq", "RED queue weight", redWq);
-		//////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 		cmd.AddValue("conf", "config file path", confFile);
 		cmd.AddValue("wien", "enable wien --> wien enables PowerTCP.", wien);
 		cmd.AddValue("delayWien", "enable wien delay --> delayWien enables Theta-PowerTCP (delaypowertcp) ", delayWien);
 
 		cmd.AddValue ("algorithm", "specify CC mode. This is added for my convinience since I prefer cmd rather than parsing files.", algorithm);
+		
 	    cmd.AddValue("windowCheck","windowCheck",windowCheck);
+
+		cmd.AddValue ("aqm_algorithm", "specify aqm mode.", aqm_algorithm);
+
 
 		cmd.Parse (argc,argv);
 		conf.open(confFile.c_str());
@@ -630,9 +628,13 @@ int main(int argc, char *argv[])
 			}
 			else if (key.compare("CC_MODE") == 0){
 				conf >> cc_mode;
-				// std::cout<<"cc_mode==>"<<cc_mode<<"\n";
 				std::cout << "CC_MODE\t\t" << cc_mode << '\n';
-			}else if (key.compare("RATE_DECREASE_INTERVAL") == 0){
+			}
+			else if (key.compare("AQM_MODE") == 0){
+				conf >> aqm_mode;
+				std::cout << "AQM_MODE\t\t" << aqm_mode << '\n';
+			}
+			else if (key.compare("RATE_DECREASE_INTERVAL") == 0){
 				double v;
 				conf >> v;
 				// std::cout<<"v==>"<<v<<"\n";
@@ -761,7 +763,7 @@ int main(int argc, char *argv[])
 		// overriding config file. I prefer to use cmd arguments
 		cc_mode = algorithm; // overrides configuration file
 		has_win=windowCheck; // overrides configuration file
-
+		aqm_mode = aqm_algorithm; // overrides configuration file
 
 	Config::SetDefault("ns3::QbbNetDevice::PauseTime", UintegerValue(pause_time));
 	Config::SetDefault("ns3::QbbNetDevice::QcnEnabled", BooleanValue(enable_qcn));
@@ -793,22 +795,7 @@ int main(int argc, char *argv[])
 	topof >> node_num >> switch_num >> tors >> link_num; // changed here. The previous order was node, switch, link // tors is not used. switch_num=tors for now.
 	tors=switch_num;
 
-	// // /////////////////////////////////////////////////////////////////////////////////////////////
-	// // 输出拓扑看看
-	// std::string topof_test_line;
-	// std::cout << "///////////////////////////////////////////////////////////////////////////////////////////////\n";
-	// std::cout << "//////////////////////////////////////////!!!TOPOLOGY!!!///////////////////////////////////////\n";
-	// std::cout << "FILE NAME IS ==> " << topology_file<<"\n";
-    // // 逐行读取并输出文件内容
-    // while (std::getline(topof_test, topof_test_line)) {
-    //     std::cout << topof_test_line << std::endl;
-    // }
-    // // 关闭文件
-    // topof_test.close();
-	// std::cout << "///////////////////////////////////////////////////////////////////////////////////////////////\n";
-	// ///////////////////////////////////////////////////////////////////////////////////////////////
-
-	std::cout << node_num << " " << switch_num << " " << tors <<  " " << link_num << std::endl;
+	std::cout << " node_num " << node_num << " switch_num " << switch_num << " tors " << tors <<  " link_num " << link_num << std::endl;
 	flowf >> flow_num;
 
 	NodeContainer serverNodes;
@@ -819,23 +806,20 @@ int main(int argc, char *argv[])
 
 	std::vector<uint32_t> node_type(node_num, 0);
 
-	std::cout << "switch_num "<< switch_num << std::endl;
 	for (uint32_t i=0;i<switch_num;i++){
 		uint32_t sid;
 		topof >> sid; //这里没读取对
-		std::cout << "sid " << sid << std::endl;
 		switchNumToId[i]=sid;
 		switchIdToNum[sid]=i;
 		if(i<tors){
-			node_type[sid]=1;
+			node_type[sid]=1;  //tor交换机
 		}
 		else
-			node_type[sid]=2;
-
+			node_type[sid]=2;  // spine？core交换机
 	}
 
 	for (uint32_t i = 0; i < node_num; i++){
-		if (node_type[i] == 0){
+		if (node_type[i] == 0){ //主机
 			Ptr<Node> node = CreateObject<Node>();
 			n.Add(node);
 			allNodes.Add(node);
@@ -896,14 +880,12 @@ int main(int argc, char *argv[])
 	{
 		uint32_t src, dst;
 		std::string data_rate, link_delay;
-		double error_rate; //std::cout<<"程序存活："<<897<<"\n";
+		double error_rate; 
 		topof >> src >> dst >> data_rate >> link_delay >> error_rate;
 
-		std::cout << src << " " << dst << " " << n.GetN()<< std::endl;//std::cout<<"程序存活："<<900<<"\n";////////////////////////成功运行到此处
-		Ptr<Node> snode = n.Get(src), dnode = n.Get(dst);//std::cout<<"程序存活："<<901<<"\n";
+		Ptr<Node> snode = n.Get(src), dnode = n.Get(dst);
 
-
-		qbb.SetDeviceAttribute("DataRate", StringValue(data_rate)); //std::cout<<"程序存活："<<904<<"\n";
+		qbb.SetDeviceAttribute("DataRate", StringValue(data_rate)); 
 		qbb.SetChannelAttribute("Delay", StringValue(link_delay));
 
 		if (error_rate > 0)
@@ -995,30 +977,24 @@ int main(int argc, char *argv[])
 					// set ecn
 					uint64_t rate = dev->GetDataRate().GetBitRate();
 
-					std::cout<<"cc_mode==>"<<cc_mode<<"[====]RED_CC_MOD==>"<<RED_CC_MOD<<"\n";
-
 					//////////////////////////////////////////////////////////////////////////////////////////////////////////
-					if(cc_mode == RED_CC_MOD){//如果拥塞控制模式是RED模式！！！
-						//启用RED相关操作
-						// 使用命令行参数或默认值
+					if(aqm_mode == PRED){
+						double redMinTh = 5.0;    // RED最小阈值（KB）
+						double redMaxTh = 15.0;   // RED最大阈值（KB）
+						double redMaxP = 0.1;     // RED最大标记概率
+						double redWq = 0.002;     // RED队列权重
 						sw->m_mmu->ConfigEcnNew(j, redMinTh, redMaxTh, redMaxP, redWq);
 						// 同时设置标准的RED参数映射
 						rate2kmin[rate] = redMinTh;
 						rate2kmax[rate] = redMaxTh;
 						rate2pmax[rate] = redMaxP;
 					}//////////////////////////////////////////////////////////////////////////////////////////////////////////
-					else{					//以下是原操作
+					else if(aqm_mode == RED){					
 						NS_ASSERT_MSG(rate2kmin.find(rate) != rate2kmin.end(), "must set kmin for each link speed");
 						NS_ASSERT_MSG(rate2kmax.find(rate) != rate2kmax.end(), "must set kmax for each link speed");
 						NS_ASSERT_MSG(rate2pmax.find(rate) != rate2pmax.end(), "must set pmax for each link speed");
 						sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
 					}
-
-					// NS_ASSERT_MSG(rate2kmin.find(rate) != rate2kmin.end(), "must set kmin for each link speed");
-					// NS_ASSERT_MSG(rate2kmax.find(rate) != rate2kmax.end(), "must set kmax for each link speed");
-					// NS_ASSERT_MSG(rate2pmax.find(rate) != rate2pmax.end(), "must set pmax for each link speed");
-					// sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
-
 
 					// set pfc
 					uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetTimeStep();
@@ -1029,9 +1005,11 @@ int main(int argc, char *argv[])
 				}
 
 			}
+			sw->m_mmu->SetAqmMode(aqm_mode);
 			sw->m_mmu->SetBufferPool(buffer_size * 1024 * 1024);
 			sw->m_mmu->SetIngressPool(buffer_size * 1024 * 1024 - totalHeadroom);
 			sw->m_mmu->SetEgressLosslessPool(buffer_size * 1024 * 1024);
+			std::cout<< "switch " << sw->GetId() << " totalHeadroom(MB) " << totalHeadroom/1e6 <<" bufferSize(MB) "<< buffer_size << std::endl;
 			sw->m_mmu->node_id = sw->GetId();
 		}
 	}
@@ -1093,9 +1071,7 @@ int main(int argc, char *argv[])
 
 	// setup routing
 	CalculateRoutes(n);
-	std::cout << "yeah " << 0<<  std::endl;
 	SetRoutingEntries();
-	std::cout << "yeah " << 1<<  std::endl;
 
 	//
 	// get BDP and delay
@@ -1162,6 +1138,9 @@ int main(int argc, char *argv[])
 	tracef.close();
 	double delay = 0.5*maxRtt*1e-9; // 10 micro seconds
 	Simulator::Schedule(Seconds(delay),PrintResultsFlow,sourceNodes,flow_num,delay);
+
+	ns3::LogComponentEnable("SwitchMmu", ns3::LOG_INFO); 
+	ns3::LogComponentEnable("RdmaHw", ns3::LOG_INFO); 
 
 	std::cout << "Running Simulation.\n";
 	NS_LOG_INFO("Run Simulation.");

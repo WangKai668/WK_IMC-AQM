@@ -31,7 +31,7 @@ private:
 	// FCS 模块的状态
 	class FcsState {
 	public:
-		const static uint32_t INDEX_SIZE = INIT_SIZE;// 位图初始化大小
+		static const uint32_t INDEX_SIZE = INIT_SIZE;// 位图初始化大小
 		uint64_t last_reset_ns;      // 上次窗口重置时间
 		uint32_t n_current;          // 当前窗口新流计数
 		uint32_t n_last;             // 上一个窗口新流计数
@@ -57,12 +57,12 @@ private:
 	// QLA 模块的状态
 	class QlaState {
 	public:
-		const static uint32_t
+		static const uint32_t
 			SHOULD_ADD_DELTA=1,		 //应该加Δλ
 			SHOULD_REDUCE_DELTA=-1,  //应该减Δλ
 			SHOULD_MAINTAIN=0;		 //应该保持不变
 
-		static double
+		double
 			beta,					 //β，用于效用函数，论文取0.4
 			q_left, 				 //映射函数左值qleft，小于等于qleft取1
 			q_right, 				 //映射函数右值qleft，此时phi取0
@@ -91,7 +91,6 @@ private:
 			initStatic();
 		}
 
-		//初始化static值
 		void initStatic(){
 			q_left=15;//原文取15个数据包
 			q_right=200;//原文没说。。。。假设为200
@@ -179,10 +178,6 @@ private:
 				minK+=mink_delta;
 			}
 
-			//决策器
-			void DecisionMaker(){
-
-			}
 
 			//首次启动的初始化
 			void InitFirstStart(uint64_t now_ns){
@@ -190,7 +185,7 @@ private:
 			}
 
 			//φ映射函数
-			static double Phi(double q_avg){//传入平均队列长度
+			double Phi(double q_avg){//传入平均队列长度
 				if(q_avg<=q_left){
 					return 1;
 				}
@@ -210,7 +205,7 @@ private:
 			}
 
 			//效用函数
-			static double UtilityFunction(double throughput_avg,double bandwidth,double q_avg){
+			double UtilityFunction(double throughput_avg,double bandwidth,double q_avg){
 				/*
 				β*(当前TQLA平均吞吐率/链路带宽)-(1-β)*φ(平均队列长度)
 				*/
@@ -248,7 +243,6 @@ public:
 
 	///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	//RED算法相关函数声明
-	bool RedShouldDropPacket(uint32_t ifindex, uint32_t qIndex);
 	double GetAvgQueueLength(uint32_t ifindex, uint32_t qIndex);
 	uint32_t GetCurrentQueueLength(uint32_t ifindex, uint32_t qIndex);
 	void UpdateAvgQueue(uint32_t ifindex, uint32_t qIndex);
@@ -305,7 +299,7 @@ public:
 	//用ns3的time类型转换delay_str为纳秒时间
 	double ParseDelayToNanoseconds(const std::string& delay_str) {
 		Time t = Time(delay_str);          // 自动解析
-		return static_cast<double>(t.GetNanoSeconds());
+		return (double)(t.GetNanoSeconds());
 	}
 
 	//传入link_delay字符串，转换为以纳秒为单位的RTT，默认RTT=2*link_delay
@@ -348,14 +342,6 @@ public:
 	bool CheckShouldResume(uint32_t port, uint32_t qIndex);
 	void SetPause(uint32_t port, uint32_t qIndex);
 	void SetResume(uint32_t port, uint32_t qIndex);
-
-	bool ShouldSendCN(uint32_t ifindex, uint32_t qIndex);
-
-	void ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax);
-	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	// 此处新增double _wq = 0.002，原函数：void ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax);
-	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-	void ConfigEcnNew(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax, double _wq /*= 0.002*/);
 
 	void SetBufferModel(std::string model){bufferModel = model;}
 
@@ -477,7 +463,14 @@ public:
 	uint64_t ingressLpf_bytes[pCnt][qCnt];
 	uint64_t egressLpf_bytes[pCnt][qCnt];
 
-	///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	// used for calculating ingress rates and egress rates 
+	uint64_t cumulatedIngresssBytes[pCnt][qCnt]; // Track bytes transmitted per port
+	uint64_t lastIngresssTime[pCnt][qCnt]; // Track last update time per port
+	uint64_t cumulatedEgresssBytes[pCnt][qCnt]; // Track bytes transmitted per port
+	uint64_t lastEgresssTime[pCnt][qCnt]; // Track last update time per port
+    uint64_t RatePrintInterval = 20000; // Print rate at the interval of 20us
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	// 用于RED算法的平均队列长度
 	uint64_t avg_egress_bytes[pCnt][qCnt];// 平均队列长度数组（每个端口，每个队列）
 
@@ -486,8 +479,30 @@ public:
 
     // // 计数用于避免连续丢包
     uint32_t count[pCnt][qCnt]; // 启用
+	
+	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	// 此处新增double _wq = 0.002，原函数：void ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax);
+	/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	void ConfigEcnNew(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax, double _wq /*= 0.002*/);
+
 	///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+	/*********************************************************************************************************************/
+	uint32_t aqmMode; 
+	void SetAqmMode(uint32_t mode) { aqmMode = mode; }
+	bool ShouldSendCN(uint32_t ifindex, uint32_t qIndex);
+    bool AQM_RED(uint32_t ifindex, uint32_t qIndex);
+    bool AQM_CoDel(uint32_t ifindex, uint32_t qIndex);
+    bool AQM_MATCP(uint32_t ifindex, uint32_t qIndex);
+    bool AQM_CEDM(uint32_t ifindex, uint32_t qIndex);
+    bool AQM_MBECN(uint32_t ifindex, uint32_t qIndex);
+    bool AQM_PRED(uint32_t ifindex, uint32_t qIndex);
+	bool AQM_IMCAQM(uint32_t ifindex, uint32_t qIndex);
+
+
+	void ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax);
+
+    /*********************************************************************************************************************/
 
 	// Buffer Sharing algorithm
 	uint32_t ingressAlg[2];

@@ -126,6 +126,7 @@ void SwitchNode::CheckAndSendResume(uint32_t inDev, uint32_t qIndex) {
 
 void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch) {
 	int idx = GetOutDev(p, ch);
+	
 	if (idx >= 0) {
 		NS_ASSERT_MSG(m_devices[idx]->IsLinkUp(), "The routing table look up should return link that is up");
 
@@ -158,6 +159,11 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch) {
 		InterfaceTag t;
 		p->PeekPacketTag(t);
 		uint32_t inDev = t.GetPortId();
+
+		// std::cout<<" debug "<<Simulator::Now().GetNanoSeconds()<<" SwitchNode:SendToDev "
+		// 		 <<" inDev "<<inDev<<" outDev "<<idx<<" qIndex "<<qIndex<<" pktSize "<<p->GetSize()
+		// 		 <<" foundPriotag "<<found<<" unsched "<<unsched<<std::endl;
+
 		if (qIndex != 0) { //not highest priority
 			// IMPORTANT: MyPriorityTag should only be attached by lossy traffic. This tag indicates the qIndex but also indicates that it is "lossy". Never attach MyPriorityTag on lossless traffic.
 			if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize(), found,unsched) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize(), found,unsched)) {			// Admission control
@@ -296,13 +302,7 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 		m_mmu->RemoveFromEgressAdmission(ifIndex, qIndex, p->GetSize(), found);
 		m_bytes[inDev][ifIndex][qIndex] -= p->GetSize();
 		if (m_ecnEnabled) {
-			/////////////////////////////////////////////////////////////////////////////////////////////////
-			// YRNK_CHANGE
-			// 改一下，用red的函数
-			// bool egressCongested = m_mmu->ShouldSendCN(ifIndex, qIndex);
-			bool egressCongested = m_mmu->RedShouldDropPacket(ifIndex, qIndex);
-			// 当然，实际上是标记packet，而并非drop，此处red与ecn结合
-			/////////////////////////////////////////////////////////////////////////////////////////////////
+			bool egressCongested = m_mmu->ShouldSendCN(ifIndex, qIndex);
 			if (egressCongested) {
 				PppHeader ppp;
 				Ipv4Header h;
@@ -312,12 +312,6 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 				p->AddHeader(h);
 				p->AddHeader(ppp);
 			}
-			/////////////////////////////////////////////////////////////////////////////////////////////////////
-			// YRNK_COUT
-			// 用于输出
-			std::cout<<"<<DEQUEUE==> Is marked? ["<<egressCongested<<"], and here's the pack:"<<std::endl;
-			p->Print(std::cout);
-			/////////////////////////////////////////////////////////////////////////////////////////////////////
 		}
 		//CheckAndSendPfc(inDev, qIndex);
 		CheckAndSendResume(inDev, qIndex);
@@ -454,13 +448,6 @@ void SwitchNode::SwitchNotifyEnqueue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 	//计算流量的哈希指纹
 	uint32_t intervalSeq = m_mmu->GetIntervalSeq(ifIndex,qIndex);//获取intervalSeq
 	uint32_t fingerPrint = FingerPrintHash(p,ch,intervalSeq);//计算指纹
-
-	/////////////////////////////////////////////////////////////////////////////////////////////////////
-	// YRNK_COUT
-	// 用于输出
-	std::cout<<">>ENQUEUE==> Sth got inside, and here's the pack:"<<std::endl;
-	p->Print(std::cout);
-	/////////////////////////////////////////////////////////////////////////////////////////////////////
 }
 
 // // 入队回调类型

@@ -120,12 +120,14 @@ uint64_t RdmaQueuePair::GetOnTheFly() {
 
 bool RdmaQueuePair::IsWinBound() {
 	uint64_t w = GetWin();
+	// std::cout<<"debug IsWinBound w "<<w<<" onthefly "<<GetOnTheFly()<<std::endl;
 	return w != 0 && GetOnTheFly() >= w;
 }
 
 uint64_t RdmaQueuePair::GetWin() {
 //	return m_win;
 	uint64_t w = 0;
+	// std::cout<<"debug m_var_win "<<m_var_win<<" powerEnabled "<<powerEnabled<<" m_baseRtt "<<m_baseRtt<<" m_win "<<m_win<<" m_rate "<<m_rate.GetBitRate()<<" m_max_rate "<<m_max_rate.GetBitRate()<<std::endl;
 	if (powerEnabled && m_var_win) {
 		w = m_rate.GetBitRate() * m_baseRtt * 1e-9 / 8.0;
 	}
@@ -133,6 +135,7 @@ uint64_t RdmaQueuePair::GetWin() {
 		w = m_win;
 	}
 	else {
+
 		if (m_win == 0)
 			return 0;
 		if (m_var_win) {

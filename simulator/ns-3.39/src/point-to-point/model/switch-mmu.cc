@@ -23,6 +23,16 @@
 # define ABM 110
 # define REVERIE 111
 
+/*Active Queue Management Algorithms*/
+#define RED 1
+#define CoDel 2
+#define MATCP 3
+#define CEDM 4
+#define MBECN 5
+#define PRED 6
+#define IMCAQM 7
+
+
 NS_LOG_COMPONENT_DEFINE("SwitchMmu");
 namespace ns3 {
 TypeId SwitchMmu::GetTypeId(void) {
@@ -144,7 +154,6 @@ SwitchMmu::SwitchMmu(void) {
 	memset(ingress_bytes, 0, sizeof(ingress_bytes));
 	memset(paused, 0, sizeof(paused));
 	memset(egress_bytes, 0, sizeof(egress_bytes));
-
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	/////////虽然不明白，但是我觉得这里也要对平均队长avgq进行一个memset
 	//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -847,6 +856,17 @@ void SwitchMmu::UpdateIngressAdmission(uint32_t port, uint32_t qIndex, uint32_t 
 	// This includes bytes from ingresspool as well as from headroom and also reserved. ingress_bytes[port][qIndex] - xoffUsed[port][qIndex] gives us the occupancy in ingressPool.
 	// ingress_bytes[port][qIndex] - xoffUsed[port][qIndex] - GetIngressReservedUsed(port,qIndex) gives us the occupancy in ingress shared pool.
 	ingress_bytes[port][qIndex] += psize;
+
+	cumulatedIngresssBytes[port][qIndex] += psize;
+	uint64_t timeDiff = Simulator::Now().GetNanoSeconds() - lastIngresssTime[port][qIndex];
+    if (timeDiff >= RatePrintInterval) {
+		// Bytes * 8 / ns = Gbps
+		std::cout << Simulator::Now().GetNanoSeconds() << " IngressRate: Port " << port << " qIndex " << qIndex
+				<< " Rate(Gbps): " << cumulatedIngresssBytes[port][qIndex]* 8.0 / timeDiff << std::endl;
+		cumulatedIngresssBytes[port][qIndex] = 0;
+        lastIngresssTime[port][qIndex] = Simulator::Now().GetNanoSeconds();
+    }
+
 	totalUsed += psize; // IMPORTANT: totalUsed is only updated in the ingress. No need to update in egress. Avoid double counting.
 
 	totalIngressReservedUsed += GetIngressReservedUsed(port, qIndex); // updating with the new reserved used.
@@ -907,6 +927,16 @@ void SwitchMmu::UpdateEgressAdmission(uint32_t port, uint32_t qIndex, uint32_t p
 		sharedPoolUsed += psize;
 		// egressLpf_bytes[port][qIndex] = Reveriegamma * egressLpf_bytes[port][qIndex] + (1-Reveriegamma) * (egress_bytes[port][qIndex]);
 	}
+
+	cumulatedEgresssBytes[port][qIndex] += psize;
+	uint64_t timeDiff = Simulator::Now().GetNanoSeconds() - lastEgresssTime[port][qIndex];
+    if (timeDiff >= RatePrintInterval) {
+		// Bytes * 8 / ns = Gbps
+		std::cout << Simulator::Now().GetNanoSeconds() << " EgressRate: Port " << port << " qIndex " << qIndex
+				<< " Rate(Gbps): " << cumulatedEgresssBytes[port][qIndex] * 8.0 / timeDiff << std::endl;
+		cumulatedEgresssBytes[port][qIndex] = 0;
+        lastEgresssTime[port][qIndex] = Simulator::Now().GetNanoSeconds();
+    }
 }
 
 void SwitchMmu::RemoveFromIngressAdmission(uint32_t port, uint32_t qIndex, uint32_t psize, uint32_t type) {
@@ -1043,18 +1073,86 @@ void SwitchMmu::SetResume(uint32_t port, uint32_t qIndex) {
 	paused[port][qIndex] = false;
 }
 
-/*
-算法：RED
-*/
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// 核心算法 MAIN！！！
-// 采用与ECN结合的RED算法
-// DROP实则为MARK
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-bool SwitchMmu::RedShouldDropPacket(uint32_t ifindex, uint32_t qIndex){
-	if (qIndex == 0)//队列长==0
-		return false;
 
+void SwitchMmu::ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax) {
+	kmin[port] = _kmin * 1000;
+	kmax[port] = _kmax * 1000;
+	pmax[port] = _pmax;
+}
+
+bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex) {// AQM算法进行ECN标记判断
+	bool MarkECN = 0;
+	switch (aqmMode) {
+		case RED:
+			MarkECN = AQM_RED(ifindex, qIndex);
+			break;
+		case CoDel:
+			MarkECN = AQM_CoDel(ifindex, qIndex);
+			break;
+		case MATCP:
+			MarkECN = AQM_MATCP(ifindex, qIndex);
+			break;
+		case CEDM:
+			MarkECN = AQM_CEDM(ifindex, qIndex);
+			break;
+		case MBECN:
+			MarkECN = AQM_MBECN(ifindex, qIndex);
+			break;	
+		case PRED:
+			MarkECN = AQM_PRED(ifindex, qIndex);
+			break;	
+		case IMCAQM:
+			MarkECN = AQM_IMCAQM(ifindex, qIndex);
+			break;	
+		default:
+			MarkECN = AQM_RED(ifindex, qIndex);
+			break;
+	}
+	// if (MarkECN)
+		std::cout << Simulator::Now().GetNanoSeconds() << " SwitchMMU:ShouldSendCN "
+				<< " ifindex " << ifindex << " qIndex " << qIndex << "  AQM " << aqmMode
+				<< " egress_bytes " << egress_bytes[ifindex][qIndex] << " ifMarked " << MarkECN
+				<< std::endl;
+    return MarkECN;
+}
+
+bool SwitchMmu::AQM_RED(uint32_t ifindex, uint32_t qIndex) {
+	if (qIndex == 0)
+		return false;
+	// std::cout<<" debug "<<Simulator::Now().GetNanoSeconds()<<" SwitchMMU:AQM_RED "
+	// 		 <<" ifindex "<<ifindex<<" qIndex "<<qIndex<<" egress_bytes "<<egress_bytes[ifindex][qIndex]<<" kmin "<<kmin[ifindex]<<" kmax "<<kmax[ifindex]<<" pmax "<<pmax[ifindex]<<std::endl;
+	if (egress_bytes[ifindex][qIndex] > kmax[ifindex])
+		return true;
+	if (egress_bytes[ifindex][qIndex] > kmin[ifindex]) {
+		double p = pmax[ifindex] * double(egress_bytes[ifindex][qIndex] - kmin[ifindex]) / (kmax[ifindex] - kmin[ifindex]);
+		if (UniformVariable(0, 1).GetValue() < p)//概率内标记
+			return true;
+	}
+	return false;
+}
+
+bool SwitchMmu::AQM_CoDel(uint32_t ifindex, uint32_t qIndex) {
+	return false;
+}
+
+bool SwitchMmu::AQM_MATCP(uint32_t ifindex, uint32_t qIndex) {
+	return false;
+}
+bool SwitchMmu::AQM_CEDM(uint32_t ifindex, uint32_t qIndex) {
+	return false;
+}
+bool SwitchMmu::AQM_MBECN(uint32_t ifindex, uint32_t qIndex) {
+	return false;
+}
+
+bool SwitchMmu::AQM_IMCAQM(uint32_t ifindex, uint32_t qIndex) {
+	return false;
+}
+
+
+bool SwitchMmu::AQM_PRED(uint32_t ifindex, uint32_t qIndex){
+	if (qIndex == 0)
+		return false;
 	double avgq = avg_egress_bytes[ifindex][qIndex];
 
 	if (avgq > kmax[ifindex]){//大于上阈直接丢包
@@ -1133,25 +1231,6 @@ void SwitchMmu::InitRed(uint32_t port) {
 
 
 
-bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex) {//基础RED来源================================================
-	if (qIndex == 0)//队列长==0
-		return false;
-	if (egress_bytes[ifindex][qIndex] > kmax[ifindex])//大于上阈直接标记
-		return true;
-	if (egress_bytes[ifindex][qIndex] > kmin[ifindex]) {//上下阈间概率标记
-		double p = pmax[ifindex] * double(egress_bytes[ifindex][qIndex] - kmin[ifindex]) / (kmax[ifindex] - kmin[ifindex]);
-		/*
-		计算丢包概率
-		Pdrop=Pmax*(AVGq-MinTh)/(MaxTh-MinTh)
-		此处实际上是
-		Pmark=Pmax*(q-MinTh)/(MaxTh-MinTh)
-		*/
-		if (UniformVariable(0, 1).GetValue() < p)//概率内标记
-			return true;
-	}//小于下阈不标记
-	return false;
-}
-
 void SwitchMmu::ConfigEcnNew(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax, double _wq = 0.002) {
 	kmin[port] = _kmin * 1000;
 	kmax[port] = _kmax * 1000;
@@ -1167,11 +1246,6 @@ void SwitchMmu::ConfigEcnNew(uint32_t port, uint32_t _kmin, uint32_t _kmax, doub
 	InitRed(port);
 }
 
-void SwitchMmu::ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax) {
-	kmin[port] = _kmin * 1000;
-	kmax[port] = _kmax * 1000;
-	pmax[port] = _pmax;
-}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // YRNK_ADD
