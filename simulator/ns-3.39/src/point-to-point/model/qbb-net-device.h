@@ -256,6 +256,12 @@ public:
 	TracedCallback<Ptr<const Packet>, Ptr<RdmaQueuePair> > m_traceQpDequeue; // the trace for printing dequeue
 
 	uint64_t hostDequeueIndex;
+
+
+  // used for calculating ingress rates and egress rates 
+	uint64_t cumulatedActualRateBytes,actualRateTime; // Track bytes transmitted    // Track last update time 
+  uint64_t RatePrintInterval = 20000; // Print rate at the interval of 20us
+
 };
 
 } // namespace ns3

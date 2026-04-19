@@ -296,6 +296,7 @@ QbbNetDevice::TransmitStart(Ptr<Packet> p)
 	Simulator::Schedule(txCompleteTime, &QbbNetDevice::TransmitComplete, this);
 
 	bool result = m_channel->TransmitStart(p, this, txTime);
+
 	if (result == false)
 	{
 		m_phyTxDropTrace(p);
@@ -361,6 +362,15 @@ QbbNetDevice::DequeueAndTransmit(void)
 			// transmit
 			m_traceQpDequeue(p, lastQp);
 			TransmitStart(p);
+
+			cumulatedActualRateBytes += p->GetSize();
+			uint64_t timeDiff = Simulator::Now().GetNanoSeconds() - actualRateTime;
+			if (timeDiff >= RatePrintInterval) {// Bytes * 8 / ns = Gbps
+				std::cout << Simulator::Now().GetNanoSeconds() << " ActualSendingRate: " <<" node: "<< m_node->GetId()
+					<< " Rate(Gbps): " << cumulatedActualRateBytes * 8.0 / timeDiff << std::endl;
+				cumulatedActualRateBytes = 0;
+				actualRateTime = Simulator::Now().GetNanoSeconds();
+			}
 
 			// update for the next avail time
 			m_rdmaPktSent(lastQp, p, m_tInterframeGap);
