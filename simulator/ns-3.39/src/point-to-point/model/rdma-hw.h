@@ -31,6 +31,7 @@ public:
 	DataRate m_minRate;		//< Min sending rate
 	uint32_t m_mtu;
 	uint32_t m_cc_mode;
+	uint32_t m_aqm_mode;
 	double m_nack_interval;
 	uint32_t m_chunk;
 	uint32_t m_ack_interval;

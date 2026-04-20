@@ -425,7 +425,11 @@ public:
 	uint32_t kmin[pCnt], kmax[pCnt];
 	double pmax[pCnt];
 
-	// Buffer model
+    uint32_t maxRtt, linkBw;
+	void setMaxRtt(uint32_t rtt) { maxRtt = rtt; }
+	void setLinkBw(uint32_t bw) { linkBw = bw; }
+
+    // Buffer model
 	std::string bufferModel;
 
 	// Buffer pools
@@ -470,6 +474,8 @@ public:
 	uint64_t lastEgresssTime[pCnt][qCnt]; // Track last update time per port
     uint64_t RatePrintInterval = 20000; // Print rate at the interval of 20us
 
+
+
     ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	// 用于RED算法的平均队列长度
 	uint64_t avg_egress_bytes[pCnt][qCnt];// 平均队列长度数组（每个端口，每个队列）
@@ -499,10 +505,75 @@ public:
     bool AQM_PRED(uint32_t ifindex, uint32_t qIndex);
 	bool AQM_IMCAQM(uint32_t ifindex, uint32_t qIndex);
 
-
-	void ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax);
+	void ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax); // 基础RED算法配置
 
     /*********************************************************************************************************************/
+
+
+	/*************************  CoDel 实现(aqm_mode=2) *********************************************************************************/
+	uint64_t codel_target; // CoDel 目标延迟 (ns)
+	uint64_t codel_interval; // CoDel 计算下一个标记时间的间
+	uint64_t codel_first_above_time[pCnt][qCnt]; // 记录延迟首次超过 Target 的时间 (ns)
+	uint64_t codel_drop_next[pCnt][qCnt];        // 下一次执行 ECN 标记的时间 (ns)
+	uint32_t codel_count[pCnt][qCnt];            // 当前拥塞周期内连续标记的次数
+	uint32_t codel_lastcount[pCnt][qCnt];            // 上次拥塞周期内连续标记的次数
+	bool codel_dropping[pCnt][qCnt];             // 当前是否处于拥塞标记状态
+
+	void SwitchMmu::ConfigEcnCoDel(uint32_t port, uint32_t _target, uint64_t _interval){
+	/*********************************************************************************************************************/
+
+
+	/*************************  CEDM 实现(aqm_mode=4) *********************************************************************************/
+    uint64_t cedm_kmin, cedm_kmax;
+	double cedm_avg_s[pCnt][qCnt], cedm_ewma = 0.129 ; // 平均队列梯度
+	uint64_t cedm_qlast[pCnt][qCnt], cedm_tlast[pCnt][qCnt]; // 上次队列长度和上次更新时间
+
+	void ConfigEcnCEDM(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _pmax);
+    bool AQM_CEDM_ENQUEUE(uint32_t ifindex, uint32_t qIndex);
+    /*********************************************************************************************************************/
+
+
+	/*************************  MATCP 实现 (aqm_mode=3) *********************************************************************************/
+	uint64_t matcp_kmin;  //ECN阈值 30packets
+	uint64_t matcp_ts; // 更新斜率的周期，默认0.5RTT，单位为纳秒
+
+    double matcp_avg_q[pCnt][qCnt], matcp_ewma = 0.129; //平均队列长度, 平滑参数
+	uint64_t matcp_q_gradient[pCnt][qCnt]; // 队列梯度 
+	uint64_t matcp_qlast[pCnt][qCnt]; // 上次队列长度
+    bool matcp_start_flag = 1; // 用于启动周期性梯度统计函数
+
+    void MATCP_CALCULATE_SLOPE(uint32_t ifindex, uint32_t qIndex);
+	void ConfigEcnMATCP(uint32_t port, uint32_t _kmin, uint32_t _ts);
+	/*********************************************************************************************************************/
+
+
+	/*************************  IMCAQM 实现 (aqm_mode=3) *********************************************************************************/
+	// 单位统一： 队列单位 Bytes， 时间单位 ns， 速率单位 bps
+	enum ImcAqmState { IMC_STEADY, IMC_BURST, IMC_RECOVER }; // 状态机状态
+	enum ImcPortState { IMC_BP, IMC_DP, IMC_NP }; // 端口状态/状态机转移条件
+
+	uint64_t imc_kmin, imc_kmax; // ECN 阈值，单位为字节
+    uint64_t imc_steady_jitter; // 长流稳态抖动幅度，默认为5KB
+	double imc_alpha_fast, imc_alpha_slow; // 速率平滑因子
+
+	bool imc_start_flag[pCnt][qCnt];   		// 首次启动IMCAQM控制器
+	uint64_t imc_last_update_time[pCnt][qCnt]; // 记录上次更新IMCAQM状态的时间，用于计算周期长度
+
+	// 记录历史值 在t周期末看到的  t周期初||t-1周期末的  缓存状态
+	uint64_t imc_q_last[pCnt][qCnt];         // t-1周期末的队列长度 (Bytes)
+	uint64_t imc_dt_last[pCnt][qCnt];        // t-1周期末的DT 
+	uint64_t imc_fn_last[pCnt][qCnt];        // t-1周期末的F(N)
+
+	uint64_t imc_qhat[pCnt][qCnt];            // 在t-1周期末预测的t周期末的队列长度 (Bytes)
+	ImcAqmState imc_aqm_state[pCnt][qCnt];      // t周期的aqm状态
+
+
+	uint64_t imc_r_ewma[pCnt][qCnt];           // 长时期注入速率 bps
+
+	// IMC-AQM 状态机更新函数
+	void UpdateImcAqmState(uint32_t port, uint32_t qIndex);
+	void ConfigEcnIMCAQM(uint32_t port, uint32_t _kmin, uint32_t _ts, uint64_t _bw);
+	/*********************************************************************************************************************/
 
 	// Buffer Sharing algorithm
 	uint32_t ingressAlg[2];

@@ -97,8 +97,8 @@ uint32_t qlen_dump_interval = 100000000, qlen_mon_interval = 100;
 uint64_t qlen_mon_start = 2000000000, qlen_mon_end = 2100000000;
 string qlen_mon_file;
 
-unordered_map<uint64_t, uint32_t> rate2kmax, rate2kmin;
-unordered_map<uint64_t, double> rate2pmax;
+double kmax, kmin;
+double pmax;
 
 /************************************************
  * Runtime varibles
@@ -692,41 +692,14 @@ int main(int argc, char *argv[])
 				conf >> enable_trace;
 				std::cout << "ENABLE_TRACE\t\t\t\t" << enable_trace << '\n';
 			}else if (key.compare("KMAX_MAP") == 0){
-				int n_k ;
-				conf >> n_k;
-				std::cout << "KMAX_MAP\t\t\t\t";
-				for (int i = 0; i < n_k; i++){
-					uint64_t rate;
-					uint32_t k;
-					conf >> rate >> k;
-					rate2kmax[rate] = k;
-					std::cout << ' ' << rate << ' ' << k;
-				}
-				std::cout<<'\n';
+				conf >> kmax;
+				std::cout << "KMAX_MAP\t\t\t\t" << kmax <<'\n';
 			}else if (key.compare("KMIN_MAP") == 0){
-				int n_k ;
-				conf >> n_k;
-				std::cout << "KMIN_MAP\t\t\t\t";
-				for (int i = 0; i < n_k; i++){
-					uint64_t rate;
-					uint32_t k;
-					conf >> rate >> k;
-					rate2kmin[rate] = k;
-					std::cout << ' ' << rate << ' ' << k;
-				}
-				std::cout<<'\n';
+				conf >> kmin;
+				std::cout << "KMIN_MAP\t\t\t\t" << kmin <<'\n';
 			}else if (key.compare("PMAX_MAP") == 0){
-				int n_k ;
-				conf >> n_k;
-				std::cout << "PMAX_MAP\t\t\t\t";
-				for (int i = 0; i < n_k; i++){
-					uint64_t rate;
-					double p;
-					conf >> rate >> p;
-					rate2pmax[rate] = p;
-					std::cout << ' ' << rate << ' ' << p;
-				}
-				std::cout<<'\n';
+				conf >> pmax;
+				std::cout << "PMAX_MAP\t\t\t\t" << pmax <<'\n';
 			}else if (key.compare("BUFFER_SIZE") == 0){
 				conf >> buffer_size;
 				std::cout << "BUFFER_SIZE\t\t\t\t" << buffer_size << '\n';
@@ -771,7 +744,7 @@ int main(int argc, char *argv[])
 	// set int_multi
 	IntHop::multi = int_multi;
 	// IntHeader::mode
-	if (cc_mode == 7) // timely, use ts
+	if (cc_mode == 7 || aqm_mode == MATCP) // timely, use ts
 		IntHeader::mode = IntHeader::TS;
 	else if (cc_mode == 3) // hpcc, powertcp, use int
 		IntHeader::mode = IntHeader::NORMAL;
@@ -968,7 +941,8 @@ int main(int argc, char *argv[])
 			uint32_t shift = 3; // by default 1/8
 			double alpha = 1.0/8;
 			sw->m_mmu->SetAlphaIngress(alpha);
-			uint64_t totalHeadroom = 0;
+			sw->m_mmu->setMaxRtt(maxRtt);
+            uint64_t totalHeadroom = 0;
 			for (uint32_t j = 1; j < sw->GetNDevices(); j++) {
 
 				for (uint32_t qu = 0; qu < 8; qu++){
@@ -976,24 +950,42 @@ int main(int argc, char *argv[])
 
 					// set ecn
 					uint64_t rate = dev->GetDataRate().GetBitRate();
+					sw->m_mmu->setLinkBw(rate);
 
 					//////////////////////////////////////////////////////////////////////////////////////////////////////////
+					switch (aqmMode) {
+						case RED:
+							sw->m_mmu->ConfigEcn(j, kmin, kmax, pmax);  // 单位 KB
+							break;
+						case CoDel:
+							sw->m_mmu->ConfigEcnCoDel(j, 51200, 1024000);  //port target interval  51.2us  1024us
+							break;
+						case MATCP:
+							kmin = 30 * packet_payload_size; // 30个包的队列长度，单位B
+							std::cout<<"MATCP_Parameter kmin: "<<kmin<<" update_interval: "<<0.5*maxRtt  <<" \n";
+							sw->m_mmu->ConfigEcnMATCP(j, kmin, 0.5*maxRtt); // kmin， 斜率更新间隔 ns
+							break;
+						case CEDM:
+							kmin = 0.17 * maxBdp; // 单位 B
+							kmax = 1.25 * kmin + 0.25 * maxBdp;  // 单位 B 
+							std::cout<<"CEDM_Parameter kmin: "<<kmin<<" kmax: "<<kmax <<" BDP "<<maxBdp <<" \n";
+							sw->m_mmu->ConfigEcnCEDM(j, kmin, kmax, 0.129);  // 0.129为平均队列滑动因子 
+							break;
+						case MBECN:
+							break;	
+						case PRED:
+							break;	
+						case IMCAQM:
+							break;	
+						default:
+							break;
+					
 					if(aqm_mode == PRED){
-						double redMinTh = 5.0;    // RED最小阈值（KB）
-						double redMaxTh = 15.0;   // RED最大阈值（KB）
-						double redMaxP = 0.1;     // RED最大标记概率
-						double redWq = 0.002;     // RED队列权重
-						sw->m_mmu->ConfigEcnNew(j, redMinTh, redMaxTh, redMaxP, redWq);
 						// 同时设置标准的RED参数映射
-						rate2kmin[rate] = redMinTh;
-						rate2kmax[rate] = redMaxTh;
-						rate2pmax[rate] = redMaxP;
-					}//////////////////////////////////////////////////////////////////////////////////////////////////////////
-					else if(aqm_mode == RED){					
-						NS_ASSERT_MSG(rate2kmin.find(rate) != rate2kmin.end(), "must set kmin for each link speed");
-						NS_ASSERT_MSG(rate2kmax.find(rate) != rate2kmax.end(), "must set kmax for each link speed");
-						NS_ASSERT_MSG(rate2pmax.find(rate) != rate2pmax.end(), "must set pmax for each link speed");
-						sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
+						rate2kmin[rate] = 5.0;    // RED最小阈值（KB）
+						rate2kmax[rate] = 15.0;   // RED最大阈值（KB）
+						rate2pmax[rate] = 0.1;     // RED最大标记概率
+						sw->m_mmu->ConfigEcnNew(j, redMinTh, redMaxTh, redMaxP, 0.002); // RED队列权重
 					}
 
 					// set pfc
@@ -1035,6 +1027,7 @@ int main(int argc, char *argv[])
 			rdmaHw->SetAttribute("L2ChunkSize", UintegerValue(l2_chunk_size));
 			rdmaHw->SetAttribute("L2AckInterval", UintegerValue(l2_ack_interval));
 			rdmaHw->SetAttribute("CcMode", UintegerValue(cc_mode));
+			rdmaHw->SetAttribute("AqmMode", UintegerValue(aqm_mode));
 			rdmaHw->SetAttribute("RateDecreaseInterval", DoubleValue(rate_decrease_interval));
 			rdmaHw->SetAttribute("MinRate", DataRateValue(DataRate(min_rate)));
 			rdmaHw->SetAttribute("Mtu", UintegerValue(packet_payload_size));
@@ -1105,6 +1098,7 @@ int main(int argc, char *argv[])
 		if (n.Get(i)->GetNodeType()){ // switch
 			Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
 			sw->SetAttribute("CcMode", UintegerValue(cc_mode));
+			sw->SetAttribute("AqmMode", UintegerValue(aqm_mode));
 			sw->SetAttribute("MaxRtt", UintegerValue(maxRtt));
 			sw->SetAttribute("PowerEnabled", BooleanValue(wien));
 		}

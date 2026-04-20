@@ -38,6 +38,7 @@ protected:
 	bool m_ecnEnabled;
 	uint32_t m_ccMode;
 	uint64_t m_maxRtt;
+	uint32_t m_aqmMode;
 
 	uint32_t m_ackHighPrio; // set high priority for ACK/NACK
 

@@ -321,6 +321,12 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 		if (buf[PppHeader::GetStaticSize() + 9] == 0x11) { // udp packet
 			IntHeader *ih = (IntHeader*)&buf[PppHeader::GetStaticSize() + 20 + 8 + 6]; // ppp, ip, udp, SeqTs, INT
 			Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(m_devices[ifIndex]);
+
+			if (m_aqmMode == 3) { // MATCP
+				uint32_t slope = m_mmu->MATCP_GET_SLOPE(ifIndex, qIndex); 
+				if (slope > ih->GetTs())
+					ih->SetTs(slope); // borrow this field to carry the slope for MATCP. 
+			}
 			if (m_ccMode == 3) { // HPCC or PowerTCP-INT
 				if (!PowerEnabled)
 					ih->PushHop(Simulator::Now().GetTimeStep(), m_txBytes[ifIndex], dev->GetQueue()->GetNBytesTotal(), dev->GetDataRate().GetBitRate());

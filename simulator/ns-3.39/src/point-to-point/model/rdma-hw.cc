@@ -38,6 +38,11 @@ TypeId RdmaHw::GetTypeId (void)
 	                                   UintegerValue(0),
 	                                   MakeUintegerAccessor(&RdmaHw::m_cc_mode),
 	                                   MakeUintegerChecker<uint32_t>())
+						.AddAttribute ("AqmMode",
+										"",
+										UintegerValue(1),
+										MakeUintegerAccessor(&RdmaHw::m_aqm_mode),
+										MakeUintegerChecker<uint32_t>())
 	                    .AddAttribute("NACKGenerationInterval",
 	                                  "The NACK Generation interval",
 	                                  DoubleValue(500.0),
@@ -585,9 +590,11 @@ Ptr<Packet> RdmaHw::GetNxtPacket(Ptr<RdmaQueuePair> qp) {
 	}
 	p->AddPacketTag(unschedtag);
 	// add SeqTsHeader
-	SeqTsHeader seqTs;
-	seqTs.SetSeq (qp->snd_nxt);
-	seqTs.SetPG (qp->m_pg);
+	SeqTsHeader seqTs;  //    ih.ts = Simulator::Now().GetTimeStep();
+    if (m_aqm_mode == 3) // MATCP  借用ih.ts字段记录斜率, 初值为最小值0
+		seqTs.ih.ts = 0;
+    seqTs.SetSeq(qp->snd_nxt);
+    seqTs.SetPG (qp->m_pg);
 	p->AddHeader (seqTs);
 	// add udp header
 	UdpHeader udpHeader;
@@ -1237,8 +1244,18 @@ void RdmaHw::HandleAckDctcp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &
 	// additive inc
 	if (qp->dctcp.m_caState == 0 && new_batch){ //非拥塞降速阶段，每个RTT只能加速一次
 		printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "DCTCP-rate-increase", qp->sip.Get(), qp->dip.Get(), qp->sport, qp->dport, qp->m_rate.GetBitRate() * 1e-9);
-		qp->m_rate = std::min(qp->m_max_rate, qp->m_rate + m_dctcp_rai);
-		printf("%.3lf\n", qp->m_rate.GetBitRate() * 1e-9);
+		// qp->m_rate = std::min(qp->m_max_rate, qp->m_rate + m_dctcp_rai);
+		if (m_aqm_mode == 3) { // MATCP
+            uint32_t slope = ch.ack.ih.ts;
+            qp->m_rate = std::min(qp->m_max_rate, (qp->m_rate + m_dctcp_rai)/(1 + slope));
+        }else{
+			qp->m_rate = std::min(qp->m_max_rate, qp->m_rate + m_dctcp_rai);
+		}
+		printf("%.3lf", qp->m_rate.GetBitRate() * 1e-9);
+		if (m_aqm_mode == 3) { // MATCP
+			printf(" slope:%.3lf", slope);
+		}
+		printf("\n");
 	}
 
 }

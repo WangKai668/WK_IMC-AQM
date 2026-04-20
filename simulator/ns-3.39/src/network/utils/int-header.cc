@@ -77,6 +77,11 @@ uint64_t IntHeader::GetTs(void){
 	return 0;
 }
 
+void IntHeader::SetTs(uint32_t _ts){
+	if (mode == TS)
+		ts = _ts;
+}
+
 uint16_t IntHeader::GetPower(void){
 	if (mode == PINT)
 		return pint_bytes == 1 ? pint.power_lo8 : pint.power;
