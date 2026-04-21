@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <cstring>
 #include "ns3/packet.h"
 #include "ns3/simulator.h"
 #include "ns3/object-vector.h"
@@ -11,6 +12,15 @@
 #include "ns3/simulator.h"
 #include "ns3/random-variable.h"
 #include "switch-mmu.h"
+
+#include <ns3/seq-ts-header.h>
+#include <ns3/udp-header.h>
+#include <ns3/ipv4-header.h>
+#include "ns3/ppp-header.h"
+#include "ppp-header.h"
+#include "qbb-header.h"
+#include "cn-header.h"
+
 
 #define LOSSLESS 0
 #define LOSSY 1
@@ -31,6 +41,8 @@
 #define MBECN 5
 #define PRED 6
 #define IMCAQM 7
+
+#define E1e9 1000000000
 
 
 NS_LOG_COMPONENT_DEFINE("SwitchMmu");
@@ -164,6 +176,23 @@ SwitchMmu::SwitchMmu(void) {
 	updateIntervalNS = 25 * 1000; // default 25us update interval for dequeue rates
 	alphaHigh = 1024; // default value to imitate a sky high threshold for all unscheduled packets
 	portCount = pCnt; // default value is 257. This should be set to the real port count using SetPortCount function externally based on the simulation setup
+
+	//Init AQM Parameters
+	memset(codel_first_above_time, 0, sizeof(codel_first_above_time));
+	memset(codel_drop_next, 0, sizeof(codel_drop_next));
+	memset(codel_count, 0, sizeof(codel_count));
+	memset(codel_lastcount, 0, sizeof(codel_lastcount));
+	memset(codel_dropping, 0, sizeof(codel_dropping));
+
+	memset(cedm_avg_s, 0, sizeof(cedm_avg_s));
+	memset(cedm_qlast, 0, sizeof(cedm_qlast));
+	memset(cedm_tlast, 0, sizeof(cedm_tlast));
+
+	memset(matcp_avg_q, 0, sizeof(matcp_avg_q));
+	memset(matcp_q_gradient, 0, sizeof(matcp_q_gradient));
+	memset(matcp_qlast, 0, sizeof(matcp_qlast));
+
+	memset(imc_period_cnt, 0, sizeof(imc_period_cnt));
 }
 
 void
@@ -1080,7 +1109,31 @@ void SwitchMmu::ConfigEcn(uint32_t port, uint32_t _kmin, uint32_t _kmax, double 
 	pmax[port] = _pmax;
 }
 
-bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex) {// AQM算法进行ECN标记判断
+void SwitchMmu::ConfigEcnCoDel(uint32_t port, uint32_t _target, uint64_t _interval){
+	codel_target = _target; // 51200; 51.2us
+	codel_interval = _interval; //1024000; 1024us
+}
+
+void SwitchMmu::ConfigEcnCEDM(uint32_t port, uint32_t _kmin, uint32_t _kmax, double _ewma) {
+	cedm_kmin = _kmin;
+	cedm_kmax = _kmax;
+	cedm_ewma = _ewma;
+}
+
+void SwitchMmu::ConfigEcnMATCP(uint32_t port, uint32_t _kmin, uint32_t _ts){
+	matcp_kmin = _kmin;
+	matcp_ts = _ts;
+}
+
+void SwitchMmu::ConfigEcnIMCAQM(uint32_t port, uint32_t _kmin, uint32_t _kmax, uint32_t _jitter, double _ewma_fast, double _ewma_slow) {
+	imc_kmin = _kmin;
+	imc_kmax = _kmax;
+	imc_steady_jitter = _jitter;
+	imc_alpha_fast = _ewma_fast;	
+	imc_alpha_slow = _ewma_slow;
+}
+
+bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex, Ptr<Packet> p) {// AQM算法进行ECN标记判断
 	bool MarkECN = 0;
 	switch (aqmMode) {
 		case RED:
@@ -1093,7 +1146,7 @@ bool SwitchMmu::ShouldSendCN(uint32_t ifindex, uint32_t qIndex) {// AQM算法进
 			MarkECN = AQM_MATCP(ifindex, qIndex);
 			break;
 		case CEDM:
-			MarkECN = AQM_CEDM(ifindex, qIndex);
+			MarkECN = AQM_CEDM(ifindex, qIndex, p);
 			break;
 		case MBECN:
 			MarkECN = AQM_MBECN(ifindex, qIndex);
@@ -1132,21 +1185,288 @@ bool SwitchMmu::AQM_RED(uint32_t ifindex, uint32_t qIndex) {
 }
 
 bool SwitchMmu::AQM_CoDel(uint32_t ifindex, uint32_t qIndex) {
-	return false;
+	/* Cited From TCN （CoNext16） 用 RTT*λ 作为ECN标记阈值，停留时间>RTT*λ 就标记ECN
+	Testbed
+	For Codel, we experimentally determine its best setting (target = 51.2us, interval = 1024us) 
+	since the recommendation setting (5ms and 100ms) in [23] is for Internet.
+	Given  base RTT is ~250us, the standard ECN marking threshold is 32KB for ECN/RED and 256us for TCN. 
+
+	NS2 Simulation
+	144 leaf-spine topology  10Gbps  85.2usRTT
+	65packets for ECN/RED；   78us for TCN；  
+	*/
+	
+	// 估计Sojourn Time  // 采用瞬时队列大小和出口带宽来估算排队延迟(在ns3中，基本无误差)  egress_bytes * 8 (转为bits) * 1e9 (转为纳秒级速率) / 链路带宽
+	double sojourn_time = (egress_bytes[ifindex][qIndex] * 8.0 * 1e9) / linkBw;
+
+	// CoDel 状态评估  
+	bool ok_to_mark = false;
+	if (sojourn_time > codel_target){
+		if (codel_first_above_time[ifindex][qIndex] == 0) { // 延迟刚刚超过 Target，开始倒计时一个 Interval
+			codel_first_above_time[ifindex][qIndex] = Simulator::Now().GetNanoSeconds() + codel_interval;
+		} else if (Simulator::Now().GetNanoSeconds() >= codel_first_above_time[ifindex][qIndex]) {
+			// 延迟超过 Target 且已经持续了整整一个 Interval，确认网络拥塞
+			ok_to_mark = true;
+		}
+	}else{
+		codel_first_above_time[ifindex][qIndex] = 0; // 在一个Interval以内，只要延时跌落Target，就重置计时器
+    }
+
+	// CoDel 控制回路层 (决定是否打 ECN 标记)
+	bool mark_ecn = false;
+	if (codel_dropping[ifindex][qIndex]) { // 当前正处于拥塞标记状态
+		if (!ok_to_mark) {// 拥塞缓解，退出标记状态
+			codel_dropping[ifindex][qIndex] = false;
+		} else if (Simulator::Now().GetNanoSeconds() >= codel_drop_next[ifindex][qIndex]) {
+			// 间隔时间到了，执行 ECN 标记，并按照 1/sqrt(count) 缩短下一次标记的时间间隔
+			mark_ecn = true;
+			codel_count[ifindex][qIndex]++;
+			codel_drop_next[ifindex][qIndex] = Simulator::Now().GetNanoSeconds() + codel_interval / std::sqrt(codel_count[ifindex][qIndex]);
+		}
+	} else { // 正常状态
+		if (ok_to_mark) { // 刚进入确认拥塞状态，立刻标记首个包作为警告
+			mark_ecn = true;
+			codel_dropping[ifindex][qIndex] = true;
+			uint32_t delta = codel_count[ifindex][qIndex] - codel_lastcount[ifindex][qIndex];
+			codel_count[ifindex][qIndex] = 1;
+			// 如果距离上次拥塞结束不足 16 个 Interval，则继承之前的计数
+            if (delta > 1 && (Simulator::Now().GetNanoSeconds() - codel_drop_next[ifindex][qIndex] < 16 * codel_interval)) {
+                codel_count[ifindex][qIndex] = delta;
+            }
+			codel_drop_next[ifindex][qIndex] = Simulator::Now().GetNanoSeconds() + codel_interval / std::sqrt(codel_count[ifindex][qIndex]);
+			codel_lastcount[ifindex][qIndex] = codel_count[ifindex][qIndex];
+		}
+	}
+	return mark_ecn;
 }
 
 bool SwitchMmu::AQM_MATCP(uint32_t ifindex, uint32_t qIndex) {
+	if (qIndex == 0)
+		return false;
+	if (matcp_start_flag){
+		Simulator::Schedule(NanoSeconds(matcp_ts), &SwitchMmu::MATCP_CALCULATE_SLOPE, this, ifindex, qIndex);
+        matcp_start_flag = 0;
+    }
+	matcp_avg_q[ifindex][qIndex] = (1 - matcp_ewma) * matcp_avg_q[ifindex][qIndex] 
+						      + matcp_ewma * egress_bytes[ifindex][qIndex]; // Eq(4)
+	if (egress_bytes[ifindex][qIndex] > matcp_kmin)
+		return true;
+
+	///////////////////////////////////////////////////////////////////	
+	// if (egress_bytes[ifindex][qIndex] > 200000)
+	// 	return true;
+	// if (egress_bytes[ifindex][qIndex] > 30000) {
+	// 	double p = 0.2 * double(egress_bytes[ifindex][qIndex] - 30000) / (200000 - 30000);
+	// 	if (UniformVariable(0, 1).GetValue() < p)//概率内标记
+	// 		return true;
+	// }
+	// return false;
+	///////////////////////////////////////////////////////////////////	
+
+	// a MATCP switch also needs to mark packets with ECN if and only if 
+	// the queue length is larger than the ECN threshold.
 	return false;
 }
-bool SwitchMmu::AQM_CEDM(uint32_t ifindex, uint32_t qIndex) {
-	return false;
+
+uint32_t SwitchMmu::MATCP_GET_SLOPE(uint32_t ifindex, uint32_t qIndex){
+    std::cout << " mmudebug: " << Simulator::Now().GetNanoSeconds() << " SwitchMMU:MATCP_GET_SLOPE "
+              << " ifindex " << ifindex << " qIndex " << qIndex << " matcp_q_gradient "
+              << matcp_q_gradient[ifindex][qIndex] << " linkBw " << linkBw << std::endl;
+	return 8 * std::min(1.0, std::max(0.0, matcp_q_gradient[ifindex][qIndex] / linkBw)); // Eq(6)
 }
+
+void SwitchMmu::MATCP_CALCULATE_SLOPE(uint32_t ifindex, uint32_t qIndex){
+	matcp_q_gradient[ifindex][qIndex] = (matcp_avg_q[ifindex][qIndex] - matcp_qlast[ifindex][qIndex]) * 1e9 * 8 / matcp_ts; // B/ns*1e9*8=bps
+	matcp_qlast[ifindex][qIndex] = matcp_avg_q[ifindex][qIndex]; 	// Eq(3) no   Eq(8) yes
+	std::cout<<" mmudebug: "<<Simulator::Now().GetNanoSeconds()<<" SwitchMMU:MATCP_CALCULATE_SLOPE "
+			 <<" ifindex "<<ifindex<<" qIndex "<<qIndex<<" egress "<<egress_bytes[ifindex][qIndex]
+			 <<" avg_q "<<matcp_avg_q[ifindex][qIndex]
+			 <<" matcp_q_gradient "<<matcp_q_gradient[ifindex][qIndex]<<" linkBw "<<linkBw<<std::endl;
+	Simulator::Schedule(NanoSeconds(matcp_ts), &SwitchMmu::MATCP_CALCULATE_SLOPE, this, ifindex, qIndex);
+}
+
+
+bool SwitchMmu::AQM_CEDM(uint32_t ifindex, uint32_t qIndex, Ptr<Packet> p) { //默认为出队时
+	bool res = true; 
+	// Bytes *8 * 1e9/ ns = bps
+	double s_gradient = (double(egress_bytes[ifindex][qIndex]) - double(cedm_qlast[ifindex][qIndex])) *8 * 1e9/ double(Simulator::Now().GetNanoSeconds() - cedm_tlast[ifindex][qIndex] + 1); // avoid division by zero
+	cedm_avg_s[ifindex][qIndex] = (1 - cedm_ewma) * cedm_avg_s[ifindex][qIndex] + cedm_ewma * s_gradient;
+
+	std::cout << Simulator::Now().GetNanoSeconds() << " CEDM: Port " << ifindex << " qIndex " << qIndex<< " s_gradient " << s_gradient << " cedm_avg_s " << cedm_avg_s[ifindex][qIndex] 
+			<<" egress_bytes "<< egress_bytes[ifindex][qIndex] <<" qlast "<< cedm_qlast[ifindex][qIndex] << " tlast "<< cedm_tlast[ifindex][qIndex]
+			<< std::endl;
+
+	PppHeader ppp;
+	Ipv4Header h;
+	p->RemoveHeader(ppp);
+	p->RemoveHeader(h);
+	Ipv4Header::EcnType ecnType = h.GetEcn();
+	if (ecnType == Ipv4Header::EcnType::ECN_CE)
+		res = true; 
+	else
+		res = false; 
+	if(ecnType == Ipv4Header::EcnType::ECN_CE && egress_bytes[ifindex][qIndex] < cedm_kmax) // 被标记ECN 且 队列<kmax
+		if(egress_bytes[ifindex][qIndex] < cedm_kmin || cedm_avg_s[ifindex][qIndex] < 0){  // 队列<kmin  或  梯度<0
+			h.SetEcn((Ipv4Header::EcnType)0x00);
+			res = false;
+        }	
+	p->AddHeader(h);
+	p->AddHeader(ppp);
+
+	cedm_tlast[ifindex][qIndex] = Simulator::Now().GetNanoSeconds();
+	cedm_qlast[ifindex][qIndex] = egress_bytes[ifindex][qIndex];
+	return res;
+}
+
+void SwitchMmu::AQM_CEDM_ENQUEUE(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p){
+	if(egress_bytes[ifIndex][qIndex] >= cedm_kmax || (cedm_avg_s[ifIndex][qIndex] >= 0 && egress_bytes[ifIndex][qIndex] >= cedm_kmin)){
+        PppHeader ppp;
+		Ipv4Header h;
+		p->RemoveHeader(ppp);
+		p->RemoveHeader(h);
+		h.SetEcn(Ipv4Header::EcnType::ECN_CE); // ECN_NotECT = 0x00,  ECN_ECT1 = 0x01,  ECN_ECT0 = 0x02, ECN_CE = 0x03
+		p->AddHeader(h);
+		p->AddHeader(ppp);	
+	}
+}
+
 bool SwitchMmu::AQM_MBECN(uint32_t ifindex, uint32_t qIndex) {
 	return false;
 }
 
 bool SwitchMmu::AQM_IMCAQM(uint32_t ifindex, uint32_t qIndex) {
-	return false;
+	if (qIndex == 0) return false;
+	// 第一次有包进来时，启动该队列的状态机调度器
+    if (!imc_period_cnt[ifindex][qIndex]) {
+        imc_period_cnt[ifindex][qIndex]++;
+        Simulator::Schedule(NanoSeconds(maxRtt), &SwitchMmu::IMCAQM_PeriodControl, this, ifindex, qIndex);
+    }
+    ImcAqmState state = imc_aqm_state[ifindex][qIndex];
+    // Steady 和 Burst 使用 K_min 进行降速，Recover 使用 K_max 排空
+    if (state == ImcAqmState::IMC_STEADY || state == ImcAqmState::IMC_BURST) {
+        if (egress_bytes[ifindex][qIndex] > imc_kmin) return true;
+    } else if (state == ImcAqmState::IMC_RECOVER) {
+        if (egress_bytes[ifindex][qIndex] > imc_kmax) return true;
+    }
+    return false;
+}
+
+void SwitchMmu::IMCAQM_PeriodControl(uint32_t port, uint32_t qIndex) {
+    uint64_t Q_t = egress_bytes[port][qIndex];
+	uint64_t DT_t = Threshold(port, qIndex, "egress", LOSSLESS, 0);
+	uint64_t Fn_t = imc_kmin; // 简化计算，暂时以K_min作为稳态目标队列长度  TODO：：后续需统计流数N，并计算对应的稳态目标队列长度 f(N)
+	
+	if (imc_period_cnt[port][qIndex] == 1) { // 首周期初始化
+		imc_aqm_state[port][qIndex] = ImcAqmState::IMC_STEADY;
+		imc_T_t[port][qIndex] = maxRtt;
+		imc_dt_last[port][qIndex] = DT_t;
+		imc_q_last[port][qIndex] = Q_t;
+		imc_fn_last[port][qIndex] = Fn_t;
+		imc_r_ewma[port][qIndex] = Q_t / maxRtt + linkBw;
+		imc_qhat[port][qIndex] = Q_t;
+        imc_period_cnt[port][qIndex]++;
+        Simulator::Schedule(NanoSeconds(maxRtt), &SwitchMmu::IMCAQM_PeriodControl, this, port, qIndex);
+		return;
+	}
+	// --------------------------------------------------------------------
+    // ------------------- 模块 1: Burst Distinguish  ---------------------
+	// --------------------------------------------------------------------
+	uint64_t Dt_last = imc_dt_last[port][qIndex];
+	uint64_t Q_last = imc_q_last[port][qIndex];
+	uint64_t Fn_last = imc_fn_last[port][qIndex];
+	uint64_t T_t = imc_T_t[port][qIndex];
+	uint64_t Qhat_t = imc_qhat[port][qIndex];
+
+    uint64_t Error_t = Q_t - Qhat_t;
+    uint64_t Safe_t = std::max(uint64_t(0), (Dt_last - Q_last) * (1 - Q_last / Fn_last));
+
+    ImcPortState port_type = ImcPortState::IMC_NP; 
+    if (Error_t > imc_steady_jitter && Error_t <= Safe_t) {
+        port_type = ImcPortState::IMC_BP; // BP
+    } else if (Error_t > (Dt_last - Q_last)) {
+        port_type = ImcPortState::IMC_DP; // DP
+    }
+
+	// --------------------------------------------------------------------
+    // ------------------- 模块 2: State Switching  -----------------------
+	// --------------------------------------------------------------------
+    ImcAqmState Aqm_state = imc_aqm_state[port][qIndex];
+    ImcAqmState Aqm_state_new = Aqm_state;
+
+    // 按照有限状态机 (FSM) 进行转移
+	{
+		if (Aqm_state == ImcAqmState::IMC_STEADY) {
+			switch (port_type) {
+				case ImcPortState::IMC_BP:
+					Aqm_state_new = ImcAqmState::IMC_BURST;
+					break;
+			}
+		} else if (Aqm_state == ImcAqmState::IMC_BURST) {
+			switch (port_type) {
+				case ImcPortState::IMC_NP:
+					Aqm_state_new = ImcAqmState::IMC_RECOVER;
+					break;
+				case ImcPortState::IMC_DP:
+					Aqm_state_new = ImcAqmState::IMC_STEADY;
+					break;
+			}
+		} else if (Aqm_state == ImcAqmState::IMC_RECOVER) {
+			switch (port_type) {
+				case ImcPortState::IMC_BP:
+					Aqm_state_new = ImcAqmState::IMC_BURST;
+					break;
+				case ImcPortState::IMC_DP:
+					Aqm_state_new = ImcAqmState::IMC_STEADY;
+					break;
+				case ImcPortState::IMC_NP:
+					if (Q_t <= Fn_t) 
+						Aqm_state_new = ImcAqmState::IMC_STEADY;
+					break;
+			}
+		}
+	}
+    // 计算下一个周期的周期长度 T_{t+1}
+    uint64_t T_next;
+	switch (Aqm_state_new) {
+		case ImcAqmState::IMC_STEADY:
+			T_next = maxRtt;
+			break;
+		case ImcAqmState::IMC_BURST:
+			T_next = maxRtt / 10;
+			break;
+		case ImcAqmState::IMC_RECOVER:
+			if (linkBw > imc_r_ewma[port][qIndex] && Q_t > Fn_t) {  // B * 8 * 1e9 / bps = ns
+				T_next = std::min(maxRtt, (Q_t - Fn_t) * 8 * E1e9 / (linkBw - imc_r_ewma[port][qIndex]));
+			} else {
+				T_next = maxRtt; // 兜底
+			}
+			break;
+	}
+
+	// --------------------------------------------------------------------
+    // ------------------ 模块 3: Switch Port Model  ----------------------
+	// --------------------------------------------------------------------
+	// Rate Model:  (Long-term Injection rate)
+	double R_t = (double)((Q_t - Q_last) / T_t + linkBw);
+	if (port_type != ImcPortState::IMC_BP) {  // 只有在非 Burst 时更新 R_ewma
+		if (R_t < imc_r_ewma[port][qIndex]) { // 快减 慢加  减少突发干扰
+			imc_r_ewma[port][qIndex] = (1.0 - imc_alpha_fast) * imc_r_ewma[port][qIndex] + imc_alpha_fast * R_t;
+		} else {
+			imc_r_ewma[port][qIndex] = (1.0 - imc_alpha_slow) * imc_r_ewma[port][qIndex] + imc_alpha_slow * R_t;
+		}
+	}
+	// Queue Model: (Estimate the queue evolution)   bps * ns / 1e9 / 8 = Bytes
+    imc_qhat[port][qIndex] = std::max((uint64_t)0, Q_t + (imc_r_ewma[port][qIndex] - linkBw) * T_next / E1e9 / 8);
+
+    // 保存当前状态留作下次计算
+	imc_aqm_state[port][qIndex] = Aqm_state_new;
+	imc_T_t[port][qIndex] = T_next;
+    imc_dt_last[port][qIndex] = DT_t;
+    imc_q_last[port][qIndex] = Q_t;
+    imc_fn_last[port][qIndex] = Fn_t;
+
+    // 递归调度下一次状态机更新
+    Simulator::Schedule(NanoSeconds(T_next), &SwitchMmu::IMCAQM_PeriodControl, this, port, qIndex);
 }
 
 
@@ -1202,7 +1522,7 @@ void SwitchMmu::UpdateAvgQueue(uint32_t ifindex, uint32_t qIndex) {
         if (avg_egress_bytes[ifindex][qIndex] < 1.0) {
             avg_egress_bytes[ifindex][qIndex] = 1.0;
         }
-    }
+}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // 获取平均队列长度

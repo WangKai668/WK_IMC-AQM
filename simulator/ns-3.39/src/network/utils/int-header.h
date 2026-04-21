@@ -112,7 +112,8 @@ public:
 	void Serialize (Buffer::Iterator start) const;
 	uint32_t Deserialize (Buffer::Iterator start);
 	uint64_t GetTs(void);
-	uint16_t GetPower(void);
+    void SetTs(uint32_t _ts);
+    uint16_t GetPower(void);
 	void SetPower(uint16_t);
 };
 
