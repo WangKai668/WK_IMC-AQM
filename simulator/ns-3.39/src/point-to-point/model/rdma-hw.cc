@@ -345,8 +345,8 @@ int RdmaHw::ReceiveUdp(Ptr<Packet> p, CustomHeader &ch) {
 		seqh.SetSport(ch.udp.dport);
 		seqh.SetDport(ch.udp.sport);
 		seqh.SetIntHeader(ch.udp.ih);
-		if (ecnbits)
-			seqh.SetCnp();
+        if (ecnbits)
+            seqh.SetCnp();
 
 		Ptr<Packet> newp = Create<Packet>(std::max(60 - 14 - 20 - (int)seqh.GetSerializedSize(), 0));
 		newp->AddHeader(seqh);
@@ -425,7 +425,7 @@ int RdmaHw::ReceiveAck(Ptr<Packet> p, CustomHeader &ch) {
 		return 0;
 	}
 
-	uint32_t nic_idx = GetNicIdxOfQp(qp);
+    uint32_t nic_idx = GetNicIdxOfQp(qp);
 	Ptr<QbbNetDevice> dev = m_nic[nic_idx].dev;
 	if (m_ack_interval == 0)
 		std::cout << "ERROR: shouldn't receive ack\n";
@@ -1246,14 +1246,13 @@ void RdmaHw::HandleAckDctcp(Ptr<RdmaQueuePair> qp, Ptr<Packet> p, CustomHeader &
 		printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "DCTCP-rate-increase", qp->sip.Get(), qp->dip.Get(), qp->sport, qp->dport, qp->m_rate.GetBitRate() * 1e-9);
 		// qp->m_rate = std::min(qp->m_max_rate, qp->m_rate + m_dctcp_rai);
 		if (m_aqm_mode == 3) { // MATCP
-            uint32_t slope = ch.ack.ih.ts;
-            qp->m_rate = std::min(qp->m_max_rate, (qp->m_rate + m_dctcp_rai)/(1 + slope));
+            qp->m_rate = std::min(qp->m_max_rate, (qp->m_rate + m_dctcp_rai) / (1 + ch.ack.ih.ts));
         }else{
 			qp->m_rate = std::min(qp->m_max_rate, qp->m_rate + m_dctcp_rai);
 		}
 		printf("%.3lf", qp->m_rate.GetBitRate() * 1e-9);
 		if (m_aqm_mode == 3) { // MATCP
-			printf(" slope:%.3lf", slope);
+			std::cout<<"   dctcp_slope:"<<ch.ack.ih.ts;
 		}
 		printf("\n");
 	}

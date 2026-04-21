@@ -35,6 +35,11 @@ TypeId SwitchNode::GetTypeId (void)
 	                                  UintegerValue(0),
 	                                  MakeUintegerAccessor(&SwitchNode::m_ccMode),
 	                                  MakeUintegerChecker<uint32_t>())
+						.AddAttribute("AqmMode",
+										"AQM mode.",
+										UintegerValue(1),
+										MakeUintegerAccessor(&SwitchNode::m_aqmMode),
+										MakeUintegerChecker<uint32_t>())
 	                    .AddAttribute("AckHighPrio",
 	                                  "Set high priority for ACK/NACK or not",
 	                                  UintegerValue(0),
@@ -169,6 +174,9 @@ void SwitchNode::SendToDev(Ptr<Packet>p, CustomHeader &ch) {
 			if (m_mmu->CheckIngressAdmission(inDev, qIndex, p->GetSize(), found,unsched) && m_mmu->CheckEgressAdmission(idx, qIndex, p->GetSize(), found,unsched)) {			// Admission control
 				m_mmu->UpdateIngressAdmission(inDev, qIndex, p->GetSize(), found, unsched);
 				m_mmu->UpdateEgressAdmission(idx, qIndex, p->GetSize(), found);
+				if (m_aqmMode == 4){ // CEDM
+					m_mmu->AQM_CEDM_ENQUEUE(idx, qIndex, p);
+				}
 			} else {
 				return; // Drop
 			}
@@ -302,7 +310,7 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 		m_mmu->RemoveFromEgressAdmission(ifIndex, qIndex, p->GetSize(), found);
 		m_bytes[inDev][ifIndex][qIndex] -= p->GetSize();
 		if (m_ecnEnabled) {
-			bool egressCongested = m_mmu->ShouldSendCN(ifIndex, qIndex);
+			bool egressCongested = m_mmu->ShouldSendCN(ifIndex, qIndex, p);
 			if (egressCongested) {
 				PppHeader ppp;
 				Ipv4Header h;
@@ -323,8 +331,8 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 			Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(m_devices[ifIndex]);
 
 			if (m_aqmMode == 3) { // MATCP
-				uint32_t slope = m_mmu->MATCP_GET_SLOPE(ifIndex, qIndex); 
-				if (slope > ih->GetTs())
+				uint32_t slope = m_mmu->MATCP_GET_SLOPE(ifIndex, qIndex);
+                if (slope > ih->GetTs())
 					ih->SetTs(slope); // borrow this field to carry the slope for MATCP. 
 			}
 			if (m_ccMode == 3) { // HPCC or PowerTCP-INT

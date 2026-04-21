@@ -941,52 +941,13 @@ int main(int argc, char *argv[])
 			uint32_t shift = 3; // by default 1/8
 			double alpha = 1.0/8;
 			sw->m_mmu->SetAlphaIngress(alpha);
-			sw->m_mmu->setMaxRtt(maxRtt);
             uint64_t totalHeadroom = 0;
 			for (uint32_t j = 1; j < sw->GetNDevices(); j++) {
-
 				for (uint32_t qu = 0; qu < 8; qu++){
 					Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(sw->GetDevice(j));
-
 					// set ecn
 					uint64_t rate = dev->GetDataRate().GetBitRate();
 					sw->m_mmu->setLinkBw(rate);
-
-					//////////////////////////////////////////////////////////////////////////////////////////////////////////
-					switch (aqmMode) {
-						case RED:
-							sw->m_mmu->ConfigEcn(j, kmin, kmax, pmax);  // 单位 KB
-							break;
-						case CoDel:
-							sw->m_mmu->ConfigEcnCoDel(j, 51200, 1024000);  //port target interval  51.2us  1024us
-							break;
-						case MATCP:
-							kmin = 30 * packet_payload_size; // 30个包的队列长度，单位B
-							std::cout<<"MATCP_Parameter kmin: "<<kmin<<" update_interval: "<<0.5*maxRtt  <<" \n";
-							sw->m_mmu->ConfigEcnMATCP(j, kmin, 0.5*maxRtt); // kmin， 斜率更新间隔 ns
-							break;
-						case CEDM:
-							kmin = 0.17 * maxBdp; // 单位 B
-							kmax = 1.25 * kmin + 0.25 * maxBdp;  // 单位 B 
-							std::cout<<"CEDM_Parameter kmin: "<<kmin<<" kmax: "<<kmax <<" BDP "<<maxBdp <<" \n";
-							sw->m_mmu->ConfigEcnCEDM(j, kmin, kmax, 0.129);  // 0.129为平均队列滑动因子 
-							break;
-						case MBECN:
-							break;	
-						case PRED:
-							break;	
-						case IMCAQM:
-							break;	
-						default:
-							break;
-					
-					if(aqm_mode == PRED){
-						// 同时设置标准的RED参数映射
-						rate2kmin[rate] = 5.0;    // RED最小阈值（KB）
-						rate2kmax[rate] = 15.0;   // RED最大阈值（KB）
-						rate2pmax[rate] = 0.1;     // RED最大标记概率
-						sw->m_mmu->ConfigEcnNew(j, redMinTh, redMaxTh, redMaxP, 0.002); // RED队列权重
-					}
 
 					// set pfc
 					uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetTimeStep();
@@ -997,7 +958,6 @@ int main(int argc, char *argv[])
 				}
 
 			}
-			sw->m_mmu->SetAqmMode(aqm_mode);
 			sw->m_mmu->SetBufferPool(buffer_size * 1024 * 1024);
 			sw->m_mmu->SetIngressPool(buffer_size * 1024 * 1024 - totalHeadroom);
 			sw->m_mmu->SetEgressLosslessPool(buffer_size * 1024 * 1024);
@@ -1101,6 +1061,52 @@ int main(int argc, char *argv[])
 			sw->SetAttribute("AqmMode", UintegerValue(aqm_mode));
 			sw->SetAttribute("MaxRtt", UintegerValue(maxRtt));
 			sw->SetAttribute("PowerEnabled", BooleanValue(wien));
+		}
+	}
+
+	// setup switch AQM
+	for (uint32_t i = 0; i < node_num; i++) {
+		if (n.Get(i)->GetNodeType()) { // is switch
+			Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
+			sw->m_mmu->setMaxRtt(maxRtt);
+			for (uint32_t j = 1; j < sw->GetNDevices(); j++) {
+				for (uint32_t qu = 0; qu < 8; qu++){
+					Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(sw->GetDevice(j));
+					switch (aqm_mode) {
+						case RED:
+							sw->m_mmu->ConfigEcn(j, kmin, kmax, pmax);  // 单位 KB
+							break;
+						case CoDel:
+							sw->m_mmu->ConfigEcnCoDel(j, 4000, 100000);  //port target interval  51.2us  1024us（PCN）  Our（4us， 100us）
+							break;
+						case MATCP:
+							kmin = 30 * packet_payload_size; // 30个包的队列长度，单位B
+							std::cout<<"MATCP_Parameter kmin: "<<kmin<<" update_interval: "<<0.5*maxRtt  <<" \n";
+							sw->m_mmu->ConfigEcnMATCP(j, kmin, 0.5*maxRtt); // kmin， 斜率更新间隔 ns
+							break;
+						case CEDM:
+							kmin = 0.17 * maxBdp; // 单位 B
+							kmax = 1.25 * kmin + 0.25 * maxBdp;  // 单位 B 
+							std::cout<<"CEDM_Parameter kmin: "<<kmin<<" kmax: "<<kmax <<" BDP "<<maxBdp <<" RTT "<<maxRtt<<" \n";
+							sw->m_mmu->ConfigEcnCEDM(j, kmin, kmax, 0.129);  // 0.129为平均队列滑动因子 
+							break;
+						case MBECN:
+							// TODO
+							break;	
+						case PRED:
+							sw->m_mmu->ConfigEcnNew(j, 5.0, 15.0, 0.1, 0.002); // RED队列权重
+							break;	
+						case IMCAQM:
+							kmin = (uint32_t)(0.17 * maxBdp); // 100Gbps * 20us = 250KB  * 0.17 = 42.5KB
+							kmax = (uint32_t)(1.25 * kmin + 0.25 * maxBdp);
+                            uint32_t jitter = 5000; //5KB
+							double ewma_fast= 0.8, ewma_slow=0.2;
+                            sw->m_mmu->ConfigEcnIMCAQM(j, kmin, kmax, jitter, ewma_fast, ewma_slow);  
+							break;	
+					}
+				}
+			}
+			sw->m_mmu->SetAqmMode(aqm_mode);
 		}
 	}
 
