@@ -157,7 +157,7 @@ uint32_t flow_num;
 void ReadFlowInput(){
 	if (flow_input.idx < flow_num){
 		flowf >> flow_input.src >> flow_input.dst >> flow_input.pg >> flow_input.dport >> flow_input.maxPacketCount >> flow_input.start_time;
-		std::cout << "Flow "<< flow_input.src << " " << flow_input.dst << " " << flow_input.pg << " " << flow_input.dport << " " << flow_input.maxPacketCount << " " << flow_input.start_time << " " << Simulator::Now().GetSeconds() << std::endl;
+		std::cout << "FlowIndex "<< flow_input.idx<< " Flow "<< flow_input.src << " " << flow_input.dst << " " << flow_input.pg << " " << flow_input.dport << " " << flow_input.maxPacketCount << " " << flow_input.start_time << " " << Simulator::Now().GetSeconds() << std::endl;
 		NS_ASSERT(n.Get(flow_input.src)->GetNodeType() == 0 && n.Get(flow_input.dst)->GetNodeType() == 0);
 	}
 }
@@ -167,6 +167,7 @@ void ScheduleFlowInputs(){
 		RdmaClientHelper clientHelper(flow_input.pg, serverAddress[flow_input.src], serverAddress[flow_input.dst], port, flow_input.dport, flow_input.maxPacketCount, has_win?(global_t==1?maxBdp:pairBdp[n.Get(flow_input.src)][n.Get(flow_input.dst)]):0, global_t==1?maxRtt:pairRtt[flow_input.src][flow_input.dst],Seconds(flow_input.start_time)+MilliSeconds(100*flow_num));
 		ApplicationContainer appCon = clientHelper.Install(n.Get(flow_input.src));
 //		appCon.Start(Seconds(flow_input.start_time));
+		// double jitter_ns = rand() % 100 / 1000000000.0; // 0~100ns 的随机打散
 		appCon.Start(Seconds(0)); // setting the correct time here conflicts with Sim time since there is already a schedule event that triggered this function at desired time.
 		// get the next flow input
 		flow_input.idx++;
@@ -942,6 +943,7 @@ int main(int argc, char *argv[])
 			double alpha = 1.0/8;
 			sw->m_mmu->SetAlphaIngress(alpha);
             uint64_t totalHeadroom = 0;
+			std::cout<<"config switch"<<" switch id "<<sw->GetId()<<" ndevice "<<sw->GetNDevices() << std::endl;
 			for (uint32_t j = 1; j < sw->GetNDevices(); j++) {
 				for (uint32_t qu = 0; qu < 8; qu++){
 					Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(sw->GetDevice(j));
@@ -951,16 +953,18 @@ int main(int argc, char *argv[])
 
 					// set pfc
 					uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetTimeStep();
-					uint32_t headroom = rate * delay / 8 / 1000000000 * 3;
+					uint32_t headroom = rate * delay / 8 / 1000000000 * 3; // 5us * 100Gbps = 62.5KB * 3 = 187.5KB
 
-					sw->m_mmu->SetHeadroom(headroom, j, qu);
+					sw->m_mmu->SetHeadroom(headroom, j, qu);  // 187.5KB * 12 * 8 = 18MB 
 					totalHeadroom += headroom;
 				}
-
 			}
-			sw->m_mmu->SetBufferPool(buffer_size * 1024 * 1024);
-			sw->m_mmu->SetIngressPool(buffer_size * 1024 * 1024 - totalHeadroom);
-			sw->m_mmu->SetEgressLosslessPool(buffer_size * 1024 * 1024);
+			// sw->m_mmu->SetBufferPool(buffer_size * 1024 * 1024);
+			// sw->m_mmu->SetIngressPool(buffer_size * 1024 * 1024 - totalHeadroom); 
+			// sw->m_mmu->SetEgressLosslessPool(buffer_size * 1024 * 1024);
+			sw->m_mmu->SetBufferPool(buffer_size * 1024 * 1024 + totalHeadroom); //modify by wangkai 20260421  把buffer_size纯当成share空间吧， headroom懒得管了
+			sw->m_mmu->SetIngressPool(buffer_size * 1024 * 1024); 
+			sw->m_mmu->SetEgressLosslessPool(buffer_size * 1024 * 1024 + totalHeadroom);
 			std::cout<< "switch " << sw->GetId() << " totalHeadroom(MB) " << totalHeadroom/1e6 <<" bufferSize(MB) "<< buffer_size << std::endl;
 			sw->m_mmu->node_id = sw->GetId();
 		}
@@ -1077,18 +1081,18 @@ int main(int argc, char *argv[])
 							sw->m_mmu->ConfigEcn(j, kmin, kmax, pmax);  // 单位 KB
 							break;
 						case CoDel:
-							sw->m_mmu->ConfigEcnCoDel(j, 4000, 100000);  //port target interval  51.2us  1024us（PCN）  Our（4us， 100us）
+							sw->m_mmu->ConfigEcnCoDel(j, 10000, 40000);  //port target interval  51.2us  1024us（PCN）  Our（4us， 100us）  40KB/40Gbps=8us
 							break;
 						case MATCP:
-							kmin = 30 * packet_payload_size; // 30个包的队列长度，单位B
+							kmin = 30 * packet_payload_size; //kmax*1000; // 30 * packet_payload_size; // 30个包的队列长度，单位B
 							std::cout<<"MATCP_Parameter kmin: "<<kmin<<" update_interval: "<<0.5*maxRtt  <<" \n";
 							sw->m_mmu->ConfigEcnMATCP(j, kmin, 0.5*maxRtt); // kmin， 斜率更新间隔 ns
 							break;
 						case CEDM:
-							kmin = 0.17 * maxBdp; // 单位 B
-							kmax = 1.25 * kmin + 0.25 * maxBdp;  // 单位 B 
+							// kmin = kmax/2 * 1000;//0.17 * maxBdp; // 单位 B        BDP=100Gbps*20us=250KB   Kmin=42.5KB  kmax=1.25*kmin+0.25*BDP=115.625KB
+							// kmax = kmax * 1000; // 1.25 * kmin + 0.25 * maxBdp;  // 单位 B 
 							std::cout<<"CEDM_Parameter kmin: "<<kmin<<" kmax: "<<kmax <<" BDP "<<maxBdp <<" RTT "<<maxRtt<<" \n";
-							sw->m_mmu->ConfigEcnCEDM(j, kmin, kmax, 0.129);  // 0.129为平均队列滑动因子 
+							sw->m_mmu->ConfigEcnCEDM(j, kmax/4 * 1000, kmax * 1000, 0.129);  // 0.129为平均队列滑动因子 
 							break;
 						case MBECN:
 							// TODO
@@ -1097,11 +1101,11 @@ int main(int argc, char *argv[])
 							sw->m_mmu->ConfigEcnNew(j, 5.0, 15.0, 0.1, 0.002); // RED队列权重
 							break;	
 						case IMCAQM:
-							kmin = (uint32_t)(0.17 * maxBdp); // 100Gbps * 20us = 250KB  * 0.17 = 42.5KB
-							kmax = (uint32_t)(1.25 * kmin + 0.25 * maxBdp);
-                            uint32_t jitter = 5000; //5KB
+							// kmin = kmax/2 * 1000; //(uint32_t)(0.17 * maxBdp); // 100Gbps * 20us = 250KB  * 0.17 = 42.5KB
+							// kmax = kmax * 1000; // (uint32_t)(1.25 * kmin + 0.25 * maxBdp);
+                            uint32_t jitter = 50000; //5KB
 							double ewma_fast= 0.8, ewma_slow=0.2;
-                            sw->m_mmu->ConfigEcnIMCAQM(j, kmin, kmax, jitter, ewma_fast, ewma_slow);  
+                            sw->m_mmu->ConfigEcnIMCAQM(j, kmax/4 * 1000, kmax*2 * 1000, jitter, ewma_fast, ewma_slow);  
 							break;	
 					}
 				}
