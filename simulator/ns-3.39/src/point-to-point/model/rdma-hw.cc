@@ -280,6 +280,8 @@ void RdmaHw::AddQueuePair(uint64_t size, uint16_t pg, Ipv4Address sip, Ipv4Addre
 		qp->hpccPint.m_curRate = m_bps;
 	}
 
+	printf("%lu %s %08x %08x %u %u %.3lf", Simulator::Now().GetTimeStep(), "DCTCP-rate-intiate", qp->sip.Get(), qp->dip.Get(), qp->sport, qp->dport, qp->m_rate.GetBitRate() * 1e-9);
+
 	// Notify Nic
 	m_nic[nic_idx].dev->NewQp(qp);
 }
@@ -695,11 +697,31 @@ void RdmaHw::cnp_received_mlx(Ptr<RdmaQueuePair> q) {
 		// schedule alpha update
 		ScheduleUpdateAlphaMlx(q);
 		// schedule rate decrease
-		ScheduleDecreaseRateMlx(q, 1); // add 1 ns to make sure rate decrease is after alpha update
+		// ScheduleDecreaseRateMlx(q, 1); // add 1 ns to make sure rate decrease is after alpha update
 		// set rate on first CNP
 		q->mlx.m_targetRate = q->m_rate = m_rateOnFirstCNP * q->m_rate;
 		q->mlx.m_first_cnp = false;
 	}
+
+	Time now = Simulator::Now();
+    // 检查距离上次降速是否已经超过了 50us (m_rateDecreaseInterval)
+    if (now - q->mlx.m_last_decrease_time >= MicroSeconds(m_rateDecreaseInterval)) {
+        q->mlx.m_last_decrease_time = now; // 记录本次降速的精确时间
+		printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "DCQCN-rate-decrease", q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->m_rate.GetBitRate() * 1e-9);
+        bool clamp = true;
+        if (!m_EcnClampTgtRate) {
+            if (q->mlx.m_rpTimeStage == 0) 
+                clamp = false;
+        }
+        if (clamp) 
+            q->mlx.m_targetRate = q->m_rate;
+                    q->m_rate = std::max(m_minRate, q->m_rate * (1 - q->mlx.m_alpha / 2));
+        q->mlx.m_rpTimeStage = 0;
+        Simulator::Cancel(q->mlx.m_rpTimer);
+        q->mlx.m_rpTimer = Simulator::Schedule(MicroSeconds(m_rpgTimeReset), &RdmaHw::RateIncEventTimerMlx, this, q);
+		printf("%.3lf\n", q->m_rate.GetBitRate() * 1e-9);
+    }
+    // 如果还没过 50us 冷却期，直接忽略这个 ECN，不做任何速率操作
 }
 
 void RdmaHw::CheckRateDecreaseMlx(Ptr<RdmaQueuePair> q) {
@@ -711,8 +733,8 @@ void RdmaHw::CheckRateDecreaseMlx(Ptr<RdmaQueuePair> q) {
 		printf("%lu %s %08x %08x %u %u %.3lf->", Simulator::Now().GetTimeStep(), "DCQCN-rate-decrease", q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->m_rate.GetBitRate() * 1e-9);
 
 		bool clamp = true;
-		if (!m_EcnClampTgtRate) { //  m_EcnClampTgtRate == 0
-			if (q->mlx.m_rpTimeStage == 0) // 在加速时才会>0； 
+		if (!m_EcnClampTgtRate) { //  m_EcnClampTgtRate == 0   目的是如果收到了连续CNP，就不要频繁更新Target
+			if (q->mlx.m_rpTimeStage == 0) // 在减速或折半加速时（stage=0），clamp=false，不更新target， 在AI或HAI时才更新target； 
 				clamp = false;
 		}
 		if (clamp) //在减速时，clamp=false， 不更新targetrate
@@ -751,15 +773,22 @@ void RdmaHw::RateIncEventMlx(Ptr<RdmaQueuePair> q) {
 	} else { // hyper increase
 		HyperIncreaseMlx(q);
 	}
-	printf("%.3lf\n", q->m_rate.GetBitRate() * 1e-9);
+	
+	// if (m_aqm_mode == 3) { // MATCP
+	// 	q->m_rate = std::min(q->m_max_rate, (q->m_rate) / (1 + ch.ack.ih.ts));
+	// }
 
+	printf("%.3lf\n", q->m_rate.GetBitRate() * 1e-9);
+	// if (m_aqm_mode == 3) { // MATCP
+	// 	std::cout<<"   dctcp_slope:"<<ch.ack.ih.ts<<std::endl;
+	// }
 }
 
 void RdmaHw::FastRecoveryMlx(Ptr<RdmaQueuePair> q) {
 #if PRINT_LOG
 	printf("%lu fast recovery: %08x %08x %u %u (%0.3lf %.3lf)->", Simulator::Now().GetTimeStep(), q->sip.Get(), q->dip.Get(), q->sport, q->dport, q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
 #endif
-	q->m_rate = (q->m_rate / 2) + (q->mlx.m_targetRate / 2);
+	q->m_rate = (q->m_rate / 2) + (q->mlx.m_targetRate / 2);	
 #if PRINT_LOG
 	printf("(%.3lf %.3lf)\n", q->mlx.m_targetRate.GetBitRate() * 1e-9, q->m_rate.GetBitRate() * 1e-9);
 #endif

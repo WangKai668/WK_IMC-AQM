@@ -53,6 +53,7 @@ public:
 		bool m_decrease_cnp_arrived; // indicate if CNP arrived in the last slot
 		uint32_t m_rpTimeStage;
 		EventId m_rpTimer;
+		Time m_last_decrease_time;
 	} mlx;
 	struct {
 		uint32_t m_lastUpdateSeq;

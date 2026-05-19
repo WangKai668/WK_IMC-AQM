@@ -1227,12 +1227,12 @@ bool SwitchMmu::AQM_CoDel(uint32_t ifindex, uint32_t qIndex) {
 		if (ok_to_mark) { // 刚进入确认拥塞状态，立刻标记首个包作为警告
 			mark_ecn = true;
 			codel_dropping[ifindex][qIndex] = true;
-			uint32_t delta = codel_count[ifindex][qIndex] - codel_lastcount[ifindex][qIndex];
-			codel_count[ifindex][qIndex] = 1;
 			// 如果距离上次拥塞结束不足 16 个 Interval，则继承之前的计数
-            if (delta > 1 && (Simulator::Now().GetNanoSeconds() - codel_drop_next[ifindex][qIndex] < 16 * codel_interval)) {
-                codel_count[ifindex][qIndex] = delta;
-            }
+			if (codel_count[ifindex][qIndex] > codel_lastcount[ifindex][qIndex] && (Simulator::Now().GetNanoSeconds() - codel_drop_next[ifindex][qIndex] < 16 * codel_interval)){
+				codel_count[ifindex][qIndex] = codel_count[ifindex][qIndex] - codel_lastcount[ifindex][qIndex];
+			}else{
+				codel_count[ifindex][qIndex] = 1;
+			}
 			codel_drop_next[ifindex][qIndex] = Simulator::Now().GetNanoSeconds() + codel_interval / std::sqrt(codel_count[ifindex][qIndex]);
 			codel_lastcount[ifindex][qIndex] = codel_count[ifindex][qIndex];
 		}
@@ -1319,7 +1319,7 @@ bool SwitchMmu::AQM_CEDM(uint32_t ifindex, uint32_t qIndex, Ptr<Packet> p) { //�
 }
 
 void SwitchMmu::AQM_CEDM_ENQUEUE(uint32_t ifIndex, uint32_t qIndex, Ptr<Packet> p){
-	if(egress_bytes[ifIndex][qIndex] >= cedm_kmax || (cedm_avg_s[ifIndex][qIndex] >= 0 && egress_bytes[ifIndex][qIndex] >= cedm_kmin)){
+	if(egress_bytes[ifIndex][qIndex] > cedm_kmax || (cedm_avg_s[ifIndex][qIndex] > 0 && egress_bytes[ifIndex][qIndex] > cedm_kmin)){
         PppHeader ppp;
 		Ipv4Header h;
 		p->RemoveHeader(ppp);
@@ -1362,7 +1362,7 @@ void SwitchMmu::IMCAQM_PeriodControl(uint32_t port, uint32_t qIndex) {
 		imc_dt_last[port][qIndex] = DT_t;
 		imc_q_last[port][qIndex] = Q_t;
 		imc_fn_last[port][qIndex] = Fn_t;
-		imc_r_ewma[port][qIndex] = Q_t / maxRtt + linkBw;
+		imc_r_ewma[port][qIndex] = Q_t * 8 * 1e9 / maxRtt + linkBw; // B *8 *1e9 / ns = bps
 		imc_qhat[port][qIndex] = Q_t;
         imc_period_cnt[port][qIndex]++;
         Simulator::Schedule(NanoSeconds(maxRtt), &SwitchMmu::IMCAQM_PeriodControl, this, port, qIndex);
@@ -1377,21 +1377,35 @@ void SwitchMmu::IMCAQM_PeriodControl(uint32_t port, uint32_t qIndex) {
 	uint64_t T_t = imc_T_t[port][qIndex];
 	uint64_t Qhat_t = imc_qhat[port][qIndex];
 
-    uint64_t Error_t = Q_t - Qhat_t;
-    uint64_t Safe_t = std::max(uint64_t(0), (Dt_last - Q_last) * (1 - Q_last / Fn_last));
+    uint64_t Error_t = Q_t > Qhat_t ? Q_t - Qhat_t : 0;
+    uint64_t Safe_t = 0;
+	if (Dt_last > Q_last && Q_last < imc_kmax)
+		// Safe_t = (Dt_last - Q_last) * (1 - (double)Q_last / Fn_last);
+		Safe_t = (Dt_last - Q_last) * (1 - (double)Q_last / imc_kmax);
+
 
     ImcPortState port_type = ImcPortState::IMC_NP; 
     if (Error_t > imc_steady_jitter && Error_t <= Safe_t) {
         port_type = ImcPortState::IMC_BP; // BP
-    } else if (Error_t > (Dt_last - Q_last)) {
+    } else if (Error_t + Q_last > Dt_last ) {
         port_type = ImcPortState::IMC_DP; // DP
     }
 
+	if (port == 1){
+	std::cout<<"-------------------------AQM_IMCAQM (KB, Gbps, ns)------------------------------------------"<<std::endl;
+	
+	std::cout<<Simulator::Now().GetNanoSeconds()<<" SwitchMMU:IMCAQM_PeriodControl_1_burstDistinguish "<<" ifindex "<<port<<" qIndex "<<qIndex <<" period: "<<imc_period_cnt[port][qIndex]
+			<<" Q_t(KB) "<<Q_t/1e3<<" Qhat_t "<<Qhat_t/1e3<<" Error_t "<<Error_t/1e3
+			 <<" Dt_last "<<Dt_last/1e3<<" Q_last "<<Q_last/1e3<<" Fn_last "<<Fn_last/1e3<<" Safe_t "<<Safe_t/1e3 <<" Safe_max "<<(Dt_last - Q_last)/1e3
+			 <<" port_type "<<(port_type == ImcPortState::IMC_BP ? "BP" : (port_type == ImcPortState::IMC_DP ? "DP" : "NP"))
+			 <<std::endl;
+	}
 	// --------------------------------------------------------------------
     // ------------------- 模块 2: State Switching  -----------------------
 	// --------------------------------------------------------------------
     ImcAqmState Aqm_state = imc_aqm_state[port][qIndex];
     ImcAqmState Aqm_state_new = Aqm_state;
+	double R_t = std::max(0.0, (Q_t*1.0 - Q_last) * 8 * E1e9  / T_t + linkBw);  //B*8*1e9/ns=bps
 
     // 按照有限状态机 (FSM) 进行转移
 	{
@@ -1404,7 +1418,8 @@ void SwitchMmu::IMCAQM_PeriodControl(uint32_t port, uint32_t qIndex) {
 		} else if (Aqm_state == ImcAqmState::IMC_BURST) {
 			switch (port_type) {
 				case ImcPortState::IMC_NP:
-					Aqm_state_new = ImcAqmState::IMC_RECOVER;
+					if (R_t < linkBw)
+						Aqm_state_new = ImcAqmState::IMC_RECOVER;
 					break;
 				case ImcPortState::IMC_DP:
 					Aqm_state_new = ImcAqmState::IMC_STEADY;
@@ -1419,8 +1434,14 @@ void SwitchMmu::IMCAQM_PeriodControl(uint32_t port, uint32_t qIndex) {
 					Aqm_state_new = ImcAqmState::IMC_STEADY;
 					break;
 				case ImcPortState::IMC_NP:
-					if (Q_t <= Fn_t) 
+					if (Q_t <= Fn_t && R_t > linkBw) 
 						Aqm_state_new = ImcAqmState::IMC_STEADY;
+					if (Q_t <= Fn_t && R_t <= linkBw) 
+						Aqm_state_new = ImcAqmState::IMC_RECOVER;
+					if (Q_t > Fn_t && R_t > linkBw) 
+						Aqm_state_new = ImcAqmState::IMC_BURST;
+					if (Q_t > Fn_t && R_t <= linkBw) 
+						Aqm_state_new = ImcAqmState::IMC_RECOVER;
 					break;
 			}
 		}
@@ -1432,7 +1453,7 @@ void SwitchMmu::IMCAQM_PeriodControl(uint32_t port, uint32_t qIndex) {
 			T_next = maxRtt;
 			break;
 		case ImcAqmState::IMC_BURST:
-			T_next = maxRtt / 10;
+			T_next = maxRtt / 2;
 			break;
 		case ImcAqmState::IMC_RECOVER:
 			if (linkBw > imc_r_ewma[port][qIndex] && Q_t > Fn_t) {  // B * 8 * 1e9 / bps = ns
@@ -1442,12 +1463,17 @@ void SwitchMmu::IMCAQM_PeriodControl(uint32_t port, uint32_t qIndex) {
 			}
 			break;
 	}
-
+	if (port == 1){
+	std::cout<<Simulator::Now().GetNanoSeconds()<<" SwitchMMU:IMCAQM_PeriodControl_2_stateSwitching "
+			<<" Aqm_state "<<(Aqm_state == ImcAqmState::IMC_STEADY ? "STEADY" : (Aqm_state == ImcAqmState::IMC_BURST ? "BURST" : "RECOVER"))
+			<<" =>>new: "<<(Aqm_state_new == ImcAqmState::IMC_STEADY ? "STEADY" : (Aqm_state_new == ImcAqmState::IMC_BURST ? "BURST" : "RECOVER"))
+			<<"    T_next "<<T_next<<std::endl;
+	}
 	// --------------------------------------------------------------------
     // ------------------ 模块 3: Switch Port Model  ----------------------
 	// --------------------------------------------------------------------
 	// Rate Model:  (Long-term Injection rate)
-	double R_t = (double)((Q_t - Q_last) / T_t + linkBw);
+	// double R_t = std::max(0.0, (Q_t*1.0 - Q_last) * 8 * E1e9  / T_t + linkBw);  //B*8*1e9/ns=bps
 	if (port_type != ImcPortState::IMC_BP) {  // 只有在非 Burst 时更新 R_ewma
 		if (R_t < imc_r_ewma[port][qIndex]) { // 快减 慢加  减少突发干扰
 			imc_r_ewma[port][qIndex] = (1.0 - imc_alpha_fast) * imc_r_ewma[port][qIndex] + imc_alpha_fast * R_t;
@@ -1456,8 +1482,17 @@ void SwitchMmu::IMCAQM_PeriodControl(uint32_t port, uint32_t qIndex) {
 		}
 	}
 	// Queue Model: (Estimate the queue evolution)   bps * ns / 1e9 / 8 = Bytes
-    imc_qhat[port][qIndex] = std::max((uint64_t)0, Q_t + (imc_r_ewma[port][qIndex] - linkBw) * T_next / E1e9 / 8);
+	if ( Q_t + (imc_r_ewma[port][qIndex] * 1.0 - linkBw) * T_next / E1e9 / 8 > 0 ){
+		imc_qhat[port][qIndex] = Q_t + (imc_r_ewma[port][qIndex]*1.0 - linkBw) * T_next / E1e9 / 8; //bps*ns/1e9/8=B
+	}else{
+		imc_qhat[port][qIndex] = 0; //bps*ns/1e9/8=B
+	}
 
+	if (port == 1){
+		std::cout<<Simulator::Now().GetNanoSeconds()<<" SwitchMMU:IMCAQM_PeriodControl_3_switchPortModel "
+			<<" R_t(Gbps) "<<R_t/1e9<<" T_t "<<T_t<<" imc_r_ewma(Gbps) "<<imc_r_ewma[port][qIndex]/1e9<<" Qhat_t(KB) "<<imc_qhat[port][qIndex]/1e3<<std::endl;
+	}
+	
     // 保存当前状态留作下次计算
 	imc_aqm_state[port][qIndex] = Aqm_state_new;
 	imc_T_t[port][qIndex] = T_next;
