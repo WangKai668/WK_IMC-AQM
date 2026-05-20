@@ -1,0 +1,73 @@
+画图用：
+    python3 plot-2to1.py --dump-dir dump/PRED/MV --alg PRED-20260511_192255
+    ============================================================↑此处，删除前缀evaluation
+    python3 plot-2to1.py --dump-dir dump/PRED/MV --alg RED-20260507_225241
+    python3 plot-2to1.py --dump-dir dump/PRED/LLF --alg PRED-20260513_202737 --low-cut-ms 0 --step 100 --master-id 5    
+    python3 plot-PRED-statics.py --low-cut-ms 0 --step 100 --master-id 5 --dump-dir dump/PRED/LLF --alg PRED-20260513_202737
+    
+    python3 plot-queue-contrast.py
+ --dump-dir dump/PRED/MV --alg RED-20260507_225241 --alg1
+ PRED-20260511_192255
+    python3 plot-PRED-statics.py --dump-dir dump/PRED/MV --alg PRED-20260511_230139
+    python3 plot-2to1.py --dump-dir dump/PRED/PWDCQCN/20t1 --alg RED-L0.2-20260512_163627
+
+    python3 plot-queue-contrast.py --dump-dir dump/PRED/PWDCQCN/20t1
+ --alg PRED-20260508_030139
+ --alg1 RED-20260514_184415
+ --alg2 RED-L2-20260508_133505
+
+    python3 plot-2to1.py --dump-dir dump/PRED/LSS --alg SPECIAL-PRED-LSS-2to1-20260519_233110
+
+    bash script-plot.sh dump/PRED/RCF/DCTCP PRED-20260520_121134 17 0 500 10
+    ------------------------------------------------------------------------
+    DUMP_DIR=${1:-$DEFAULT_DUMP_DIR}
+    POST_FIX=${2:-$DEFAULT_POST_FIX}
+    MASTER_ID=${3:-$DEFAULT_MASTER_ID}
+    LOW_CUT=${4:-$DEFAULT_LOW_CUT}
+    HIGH_CUT=${5:-$DEFAULT_HIGH_CUT}
+    STEP=${6:-$DEFAULT_STEP}
+    ------------------------------------------------------------------------
+
+真实流量生成：
+    #websearch，128主机，90%负载，10G带宽，仿真0.1秒【最长10毫秒】
+    python3 traffic_gen.py -c cdf/websearch.txt -n 128 -l 0.9 -b 10G -t 0.1
+    ===============================================================================
+    Options:
+        -h, --help            show this help message and exit
+        -c CDF_FILE, --cdf=CDF_FILE
+                                the file of the traffic size cdf
+        -n NHOST, --nhost=NHOST
+                                number of hosts
+        -l LOAD, --load=LOAD  the percentage of the traffic load to the network
+                                capacity, by default 0.3
+        -b BANDWIDTH, --bandwidth=BANDWIDTH
+                                the bandwidth of host link (G/M/K), by default 10G
+        -t TIME, --time=TIME  the total run time (s), by default 10
+        -o OUTPUT, --output=OUTPUT
+                                the output file
+    ===============================================================================
+
+    #LSS场景websearch，128主机，0.1~0.9 step 0.1负载，10G带宽，仿真0.01秒
+    #LSS场景websearch，128主机，0.1~0.9 step 0.1负载，10G带宽，仿真0.05秒
+    python3 traffic_gen_scene.py -c cdf/websearch.txt -n 128 --load-min 0.1 --load-max 0.9 --load-step 0.1 -b 10G -t 0.05 -s LSS
+    #datamining稍微多跑一会，到0.05秒
+    python3 traffic_gen_scene.py -c cdf/datamining.txt -n 128 --load-min 0.1 --load-max 0.9 --load-step 0.1 -b 10G -t 0.05 -s LSS
+
+    parser.add_option("-c", "--cdf", dest = "cdf_file", help = "the file of the traffic size cdf", default = "uniform_distribution.txt")
+	parser.add_option("-n", "--nhost", dest = "nhost", help = "number of hosts")
+	parser.add_option("--lmin", "--load-min", dest = "minimum load", help = "the percentage of the traffic load to the network capacity, by default 0.1", default = "0.1")
+	parser.add_option("--lmax", "--load-max", dest = "maximum load", help = "the percentage of the traffic load to the network capacity, by default 0.9", default = "0.9")
+	parser.add_option("--lstep", "--load-step", dest = "load step", help = "the step of load percentage, by default 0.1", default = "0.1")
+	parser.add_option("-b", "--bandwidth", dest = "bandwidth", help = "the bandwidth of host link (G/M/K), by default 10G", default = "10G")
+	parser.add_option("-t", "--time", dest = "time", help = "the total run time (s), by default 10", default = "10")
+	parser.add_option("-o", "--output", dest = "output", help = "the output file", default = "tmp_traffic.txt")
+	parser.add_option("-s", "--scene", dest = "scene", help = "the scene name", default = "LSS")
+	
+生成拓扑与流量：
+    python3 GTF-PWDCQCN.py
+    python3 GTF-MV.py
+
+启动仿真：
+    bash script-PRED.sh
+
+    python3 plot-2to1.py --dump-dir dump/PRED/MV --alg PRED-20260507_120625
