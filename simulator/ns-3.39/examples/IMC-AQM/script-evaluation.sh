@@ -2,9 +2,9 @@ source config.sh
 # 用法：
 #   ./script-evaluation.sh 2to1
 # scenario="2to1_burst"
-scenario="10to1_burst"
+# scenario="10to1_burst"
 # scenario="10to1"
-# scenario="2to1"
+scenario="2to1"
 
 configFile="$NS3/examples/IMC-AQM/config-${scenario}.txt"
 RES_DUMP="$NS3/examples/IMC-AQM/dump_${scenario}"
