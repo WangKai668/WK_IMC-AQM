@@ -96,7 +96,7 @@ def parse_and_plot_one(alg: str, dump_dir: str) -> bool:
     # 图1：ECN + rate + alpha
     fig, ax1 = plt.subplots(figsize=(12, 6))
     ax1.set_xlabel("Time (ms)")
-    ax1.set_xlim(0,12)
+    # ax1.set_xlim(0,12)
     # ax1.set_ylim(18,22)
     ax1.set_ylabel("Send Rate (Gbps)", color="blue")
     if time_rate:
@@ -142,8 +142,8 @@ def parse_and_plot_one(alg: str, dump_dir: str) -> bool:
 
     axq.set_xlabel("Time (ms)")
     axq.set_ylabel("Queue Length (KB)")
-    axq.set_ylim(0, 500)
-    axq.set_xlim(0, 12)
+    # axq.set_ylim(0, 500)
+    # axq.set_xlim(0, 12)
     axq.set_title(f"({alg}) Switch Port Queue Length Over Time")
 
      # State on y2 (STEADY=1, BURST=2, RECOVER=3)

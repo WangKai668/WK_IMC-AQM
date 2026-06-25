@@ -1081,7 +1081,7 @@ int main(int argc, char *argv[])
 							sw->m_mmu->ConfigEcn(j, kmin, kmax, pmax);  // 单位 KB
 							break;
 						case CoDel:
-							sw->m_mmu->ConfigEcnCoDel(j, 10000, 40000);  //port target interval  51.2us  1024us（PCN）  Our（4us， 100us）  40KB/40Gbps=8us
+							sw->m_mmu->ConfigEcnCoDel(j, 4000, 100000);  //port target interval  51.2us  1024us（PCN）  Our（4us， 100us）  40KB/40Gbps=8us
 							break;
 						case MATCP:
 							kmin = 30 * packet_payload_size; //kmax*1000; // 30 * packet_payload_size; // 30个包的队列长度，单位B
@@ -1089,9 +1089,10 @@ int main(int argc, char *argv[])
 							sw->m_mmu->ConfigEcnMATCP(j, kmin, 0.5*maxRtt); // kmin， 斜率更新间隔 ns
 							break;
 						case CEDM:
-							// kmin = kmax/2 * 1000;//0.17 * maxBdp; // 单位 B        BDP=100Gbps*20us=250KB   Kmin=42.5KB  kmax=1.25*kmin+0.25*BDP=115.625KB
-							// kmax = kmax * 1000; // 1.25 * kmin + 0.25 * maxBdp;  // 单位 B 
+							kmin = 0.17 * maxBdp; // 单位 B        BDP=100Gbps*20us=250KB   Kmin=42.5KB  kmax=1.25*kmin+0.25*BDP=115.625KB
+							kmax = 1.25 * kmin + 0.25 * maxBdp;  // 单位 B 
 							std::cout<<"CEDM_Parameter kmin: "<<kmin<<" kmax: "<<kmax <<" BDP "<<maxBdp <<" RTT "<<maxRtt<<" \n";
+							// sw->m_mmu->ConfigEcnCEDM(j, kmax/4 * 1000, kmax * 1000, 0.129);  // 0.129为平均队列滑动因子 
 							sw->m_mmu->ConfigEcnCEDM(j, kmax/4 * 1000, kmax * 1000, 0.129);  // 0.129为平均队列滑动因子 
 							break;
 						case MBECN:
