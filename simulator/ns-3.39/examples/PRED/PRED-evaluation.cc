@@ -470,6 +470,8 @@ int main(int argc, char *argv[])
 			// 是否仅启用QLA/FCS
 				bool OnlyQLA = false;			//是否仅启用QLA
 				bool OnlyFCS = false;			//是否仅启用FCS
+			// 是否启用ECMP
+				bool ENABLE_ECMP = false;
 
 		//以下是CMD参数添加
 		//FCS
@@ -879,6 +881,11 @@ int main(int argc, char *argv[])
 				conf >> v;
 				OnlyFCS = v;
 				std::cout << "ONLY_FCS\t\t\t\t" << OnlyFCS << '\n';
+			}else if(key.compare("ENABLE_ECMP") == 0){
+				int v;
+				conf >> v;
+				ENABLE_ECMP = v;
+				std::cout << "ENABLE_ECMP\t\t\t\t" << ENABLE_ECMP << '\n';
 			}/*YRNK_ADD_END*/
 			fflush(stdout);
 		}
@@ -989,6 +996,18 @@ int main(int argc, char *argv[])
 	}
 
 	NS_LOG_INFO("Create channels.");
+
+
+	// YRNK: ADD ECMP
+	Config::SetDefault("ns3::Ipv4GlobalRouting::RandomEcmpRouting", BooleanValue(
+		// ENABLE_ECMP
+		true
+	));
+	// 让全局路由管理器根据网络拓扑和 IP 地址计算并填充路由表
+	// if(ENABLE_ECMP){
+	// 	Ipv4GlobalRoutingHelper::PopulateRoutingTables();
+	// 	NS_LOG_INFO("ENABLE ECMP DONE.");
+	// }
 
 	//
 	// Explicitly create the channels required by the topology.

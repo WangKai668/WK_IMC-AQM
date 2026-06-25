@@ -19,9 +19,22 @@ STEP=${6:-$DEFAULT_STEP}
 source config.sh
 cd $NS3/examples/PRED/
 
-echo "正在绘制图表plot-2to1..."
-time python3 plot-2to1.py --low-cut-ms ${LOW_CUT} --high-cut-ms ${HIGH_CUT} --step ${STEP} --master-id ${MASTER_ID} --dump-dir ${DUMP_DIR} --alg ${POST_FIX}
-echo "绘制完毕"
+if [ $# -ge 7 ]; then
+    Y_LIM=${7}
+    echo "第7个参数存在：$Y_LIM"
+    echo "正在绘制图表plot-2to1..."
+    time python3 plot-2to1.py --low-cut-ms ${LOW_CUT} --high-cut-ms ${HIGH_CUT} --step ${STEP} --master-id ${MASTER_ID} --dump-dir ${DUMP_DIR} --alg ${POST_FIX} --queue-ylim ${Y_LIM}
+    echo "绘制完毕"
+else
+    echo "第7个参数不存在"
+    echo "正在绘制图表plot-2to1..."
+    time python3 plot-2to1.py --low-cut-ms ${LOW_CUT} --high-cut-ms ${HIGH_CUT} --step ${STEP} --master-id ${MASTER_ID} --dump-dir ${DUMP_DIR} --alg ${POST_FIX}
+    echo "绘制完毕"
+fi
+
+# echo "正在绘制图表plot-2to1..."
+# time python3 plot-2to1.py --low-cut-ms ${LOW_CUT} --high-cut-ms ${HIGH_CUT} --step ${STEP} --master-id ${MASTER_ID} --dump-dir ${DUMP_DIR} --alg ${POST_FIX}
+# echo "绘制完毕"
 
 echo "正在绘制图表plot-PRED-statics..."
 time python3 plot-PRED-statics.py --low-cut-ms ${LOW_CUT} --high-cut-ms ${HIGH_CUT} --step ${STEP} --master-id ${MASTER_ID} --dump-dir ${DUMP_DIR} --alg ${POST_FIX}

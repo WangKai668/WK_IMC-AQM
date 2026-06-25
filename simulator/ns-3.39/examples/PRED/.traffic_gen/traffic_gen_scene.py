@@ -135,8 +135,18 @@ if __name__ == "__main__":
 
 		# generate flows
 		avg = customRand.getAvg()
+
+		print(f"Average flow size: {avg} bytes")
+
 		avg_inter_arrival = 1/(bandwidth*load/8./avg)*1000000000
+		# avg_inter_arrival = (8.0 * avg * nhost) / (bandwidth * load) * 1e9#修改计算方式
+
+		print(f"avg_inter_arrival: {avg_inter_arrival} ns")
 		n_flow_estimate = int(time / avg_inter_arrival * nhost)
+		# n_flow_estimate = int(time / (avg_inter_arrival / nhost) * nhost)
+
+		print(f"n_flow_estimate: {n_flow_estimate}")
+
 		n_flow = 0
 		ofile.write("%d \n"%n_flow_estimate)
 		host_list = [(base_t + int(poisson(avg_inter_arrival)), i) for i in range(nhost)]

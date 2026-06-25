@@ -4,6 +4,15 @@ import matplotlib.pyplot as plt
 import argparse
 import os
 
+# 设置中文字体（避免方框乱码）
+# 方案一：使用系统常见中文字体（优先 SimHei/黑体，适用于 Windows/Linux/macOS）
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'Arial Unicode MS']
+# 解决负号显示为方块的问题
+plt.rcParams['axes.unicode_minus'] = False
+
+# 可选：设置字体大小
+plt.rcParams['font.size'] = 16
+
 def parse_args():
     p = argparse.ArgumentParser(description="Plot IMC-AQM logs (2to1)")
     p.add_argument("--alg", default="RED", help="Algorithm name, e.g., RED/PIE/CoDel (default: RED)")
@@ -123,6 +132,26 @@ class PREDLogParser(BaseLogParser):
         ]
         super().__init__(prefix, fields)
 
+# ==================== Utility 解析器 =====================
+class UtilityLogParser(BaseLogParser):
+    def __init__(self):
+        prefix = re.compile(
+            r'^(?P<timestamp>\d+)\s+UtilityFunction\[port:(?P<port>\d+)\]\[queue:(?P<queue>\d+)\]:\s+'
+        )
+        fields = [
+            ("throughput_avg",  r"[\d.eE+-]+", float),
+            ("bandwidth",       r"[\d.eE+-]+", float),
+            ("t_slash_b",       r"[\d.eE+-]+", float),
+            ("beta",            r"[\d.eE+-]+", float),
+            ("beta_t_slash_b",  r"[\d.eE+-]+", float),
+            ("one_minus_beta",  r"[\d.eE+-]+", float),
+            ("q_avg",           r"[\d.eE+-]+", float),
+            ("Phi",             r"[\d.eE+-]+", float),
+            ("one_minus_beta_Phi", r"[\d.eE+-]+", float),
+            ("utility",         r"[\d.eE+-]+", float),
+        ]
+        super().__init__(prefix, fields)
+
 # ===================== 日志读取与处理 =====================
 def parse_log_file(
     file_path: str,
@@ -149,10 +178,12 @@ def parse_log_file(
     qla_parser = QLALogParser()
     fcs_parser = FCSLogParser()
     pred_parser = PREDLogParser()
+    utility_parser = UtilityLogParser()
 
     all_qla: List[Dict[str, Any]] = []
     all_fcs: List[Dict[str, Any]] = []
     all_pred: List[Dict[str, Any]] = []
+    all_utility: List[Dict[str, Any]] = []
 
     # 读取全部合法记录，同时记录最大时间戳
     max_ts = 0
@@ -182,6 +213,13 @@ def parse_log_file(
             parsed = pred_parser.parse_line(line)
             if parsed:
                 all_pred.append(parsed)
+                max_ts = max(max_ts, parsed['timestamp'])
+                min_ts = min(min_ts, parsed['timestamp'])
+
+            #解析Utility
+            parsed = utility_parser.parse_line(line)
+            if parsed:
+                all_utility.append(parsed)
                 max_ts = max(max_ts, parsed['timestamp'])
                 min_ts = min(min_ts, parsed['timestamp'])
 
@@ -228,8 +266,9 @@ def parse_log_file(
     qla_filtered = filter_and_sample(all_qla)
     fcs_filtered = filter_and_sample(all_fcs)
     pred_filtered = filter_and_sample(all_pred)
+    utility_filtered = filter_and_sample(all_utility)
 
-    return qla_filtered, fcs_filtered, pred_filtered
+    return qla_filtered, fcs_filtered, pred_filtered, utility_filtered
 
 # ===================== 绘图函数 =====================
 import matplotlib.pyplot as plt
@@ -245,23 +284,36 @@ def plot_log_time_series(
     ylabel: str = "Value",
     start_time_ms: Optional[float] = None,
     figsize: tuple = (12, 6),
-    save_path: Optional[str] = None,   # 新增：保存图像的文件路径，如 "output.png"
-    pic_name: Optional[str] = None,     # 新增：图像文件名（不含路径），如 "qla_metrics.png"
-    show: bool = True                  # 是否在保存后显示图像
+    save_path: Optional[str] = None,
+    pic_name: Optional[str] = None,
+    show: bool = True,
+    vline_step: Optional[int] = None,
+    vline_kwargs: Optional[dict] = None,
+    marker: Union[str, List[str], None] = None,
+    markersize: float = 4.0,
+    linestyle: Union[str, List[str], None] = None,
 ):
     """
-    从日志数据中提取指定字段，按时间戳绘图，并支持保存图像。
-    
+    从日志数据中提取指定字段，按时间戳绘图，支持多种自定义样式。
+
     参数:
-        data: parse_log_file 返回的列表（如 qla_data 或 fcs_data）
+        data: 日志记录列表，每条记录为字典，必须包含 'timestamp' 键（纳秒）
         fields: 要绘制的字段名（字符串或字符串列表）
-        colors: 线条颜色列表
-        labels: 图例标签列表
-        title, xlabel, ylabel: 图表文字
-        start_time_ms: 基准时间（毫秒），为 None 时使用数据最小时间戳
+        colors: 线条颜色列表（可选）
+        labels: 图例标签列表（可选）
+        title: 图表标题
+        xlabel: X轴标签
+        ylabel: Y轴标签
+        start_time_ms: 基准时间（毫秒），为 None 时使用绝对时间
         figsize: 图形大小
-        save_path: 保存图像的文件路径（如 "figures/trend.png"），若为 None 则不保存
-        show: 是否显示图像（若保存后不显示可设为 False）
+        save_path: 保存目录路径
+        pic_name: 图片文件名
+        show: 是否显示图片
+        vline_step: 每多少个数据点画一条竖线（基于数据索引，非时间间隔）
+        vline_kwargs: 竖线样式字典，例如 {"color": "gray", "linestyle": "--", "alpha": 0.7}
+        marker: 标记形状，可以是字符串（所有曲线相同）或字符串列表（每条曲线单独指定）
+        markersize: 标记大小
+        linestyle: 线型，可以是字符串或字符串列表
     """
     if not data:
         print("警告：数据为空，无法绘图")
@@ -271,6 +323,21 @@ def plot_log_time_series(
     if isinstance(fields, str):
         fields = [fields]
     n_lines = len(fields)
+
+    # 处理 marker 和 linestyle 为列表或单值
+    if marker is None:
+        marker_list = [None] * n_lines
+    elif isinstance(marker, str):
+        marker_list = [marker] * n_lines
+    else:
+        marker_list = marker[:n_lines] if len(marker) >= n_lines else marker + [None] * (n_lines - len(marker))
+
+    if linestyle is None:
+        linestyle_list = ['-'] * n_lines
+    elif isinstance(linestyle, str):
+        linestyle_list = [linestyle] * n_lines
+    else:
+        linestyle_list = linestyle[:n_lines] if len(linestyle) >= n_lines else linestyle + ['-'] * (n_lines - len(linestyle))
 
     # 颜色处理
     if colors is None:
@@ -284,30 +351,45 @@ def plot_log_time_series(
     else:
         labels = labels[:n_lines]
 
-    # 提取时间戳（纳秒）转换为毫秒
+    # 时间处理：纳秒 -> 毫秒
     timestamps_ns = [rec['timestamp'] for rec in data]
     timestamps_ms = [t / 1_000_000.0 for t in timestamps_ns]
-
-    # 相对时间处理
-    # if start_time_ms is None:
-    #     start_time_ms = min(timestamps_ms)
-    # rel_time_ms = [t - start_time_ms for t in timestamps_ms]
-    # 修改
     if start_time_ms is not None:
         rel_time_ms = [t - start_time_ms for t in timestamps_ms]
     else:
-        rel_time_ms = timestamps_ms  # 直接使用绝对时间，不做偏移
+        rel_time_ms = timestamps_ms
 
-    # 绘图
     plt.figure(figsize=figsize)
+
+    # 绘制每条曲线
     for i, field in enumerate(fields):
         values = [rec.get(field) for rec in data]
-        # 过滤无效值
+        # 过滤掉 None 值
         valid_pairs = [(rel, val) for rel, val in zip(rel_time_ms, values) if val is not None]
         if not valid_pairs:
             continue
         x_vals, y_vals = zip(*valid_pairs)
-        plt.plot(x_vals, y_vals, color=colors[i], label=labels[i], linewidth=1.5)
+        plt.plot(
+            x_vals, y_vals,
+            color=colors[i],
+            label=labels[i],
+            linewidth=1.5,
+            linestyle=linestyle_list[i],
+            marker=marker_list[i],
+            markersize=markersize,
+            markerfacecolor=colors[i] if marker_list[i] else None,
+            markeredgewidth=0.5
+        )
+
+    # 绘制竖线（基于所有数据点的 x 坐标，而非有效点）
+    if vline_step and vline_step > 0:
+        # 使用完整的 rel_time_ms 列表（与 data 一一对应）
+        for idx in range(vline_step - 1, len(rel_time_ms), vline_step):
+            x_pos = rel_time_ms[idx]
+            kwargs = {"color": "gray", "linestyle": "--", "alpha": 0.5}
+            if vline_kwargs:
+                kwargs.update(vline_kwargs)
+            plt.axvline(x=x_pos, **kwargs)
 
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
@@ -319,7 +401,7 @@ def plot_log_time_series(
     # 保存图像
     if save_path:
         if pic_name:
-            save_path = f"{save_path}/{pic_name}"
+            save_path = os.path.join(save_path, pic_name)  # 更安全的路径拼接
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"图像已保存至: {save_path}")
 
@@ -419,7 +501,7 @@ def plot_dual_axis_time_series(
 def main():
     """示例：演示如何调用解析函数（可按 port/queue 过滤）"""
     # 示例：只读取 port=17, queue=3 的数据，忽略最近 5 秒之前的数据，步长为 2
-    qla_data, fcs_data, pred_data = parse_log_file(
+    qla_data, fcs_data, pred_data, utility_data = parse_log_file(
         log_file,
         low_cut_ms=low_cut_ms,
         high_cut_ms=high_cut_ms,
@@ -439,6 +521,10 @@ def main():
     print(f"PRED 有效记录数: {len(pred_data)}")
     if pred_data:
         print("PRED 第一条:", pred_data[0])
+
+    print(f"Utility 有效记录数: {len(utility_data)}") 
+    if utility_data:
+        print("Utility 第一条:", utility_data[0])
 
     # 假设已经通过 parse_log_file 获得了 qla_data 和 fcs_data
     # qla_data, fcs_data = parse_log_file("log.txt", low_cut_ms=5000, step=2, port=17, queue=3)
@@ -483,7 +569,57 @@ def main():
         filename=f"pred_dual_axis_{args.alg}.png",
         show=False
     )
-    
+
+    # 绘制UTILITY曲线，保存并显示
+    plot_log_time_series(
+        data=utility_data,
+        fields=["beta_t_slash_b", "one_minus_beta_Phi", "utility"],
+        colors=["green","yellow","blue"],
+        labels=["Beta * (t/b)", "(1-beta)*Phi", "Utility"],
+        title=f"Utility Metrics over Time (Port {port}, Queue {queue})",
+        save_path=dump_dir,   # 保存到当前目录
+        pic_name=f"utility_metrics_{args.alg}.png",  # 指定文件名
+        show=False,
+        vline_step=4,
+        vline_kwargs={"color": "red", "linestyle": ":", "alpha": 0.6},
+        marker='o',
+        markersize=5,
+        linestyle='--',
+    )
+
+    # 绘制原始UTILITY曲线，保存并显示
+    plot_log_time_series(
+        data=utility_data,
+        fields=["t_slash_b", "Phi", "utility"],
+        colors=["green","yellow","blue"],
+        labels=["平均出吞吐量/链路带宽", "Phi函数", "Utility"],
+        title=f"原始效用值数据(Port {port}, Queue {queue})",
+        save_path=dump_dir,   # 保存到当前目录
+        pic_name=f"original_utility_metrics_{args.alg}.png",  # 指定文件名
+        show=False,
+        vline_step=4,
+        vline_kwargs={"color": "red", "linestyle": ":", "alpha": 0.6},
+        marker='o',
+        markersize=5,
+        linestyle='--',
+    )
+
+    # 绘制平均队列长度曲线，保存并显示
+    plot_log_time_series(
+        data=utility_data,
+        fields=["q_avg"],
+        colors=["yellow"],
+        labels=["平均出吞吐量/链路带宽"],
+        title=f"QLA的平均队列长度(Port {port}, Queue {queue})",
+        save_path=dump_dir,   # 保存到当前目录
+        pic_name=f"AVG_Q_metrics_{args.alg}.png",  # 指定文件名
+        show=False,
+        vline_step=4,
+        vline_kwargs={"color": "red", "linestyle": ":", "alpha": 0.6},
+        marker='o',
+        markersize=5,
+        linestyle='--',
+    )
 
     # 绘制 FCS 曲线，保存并显示
     plot_log_time_series(
@@ -494,6 +630,23 @@ def main():
         save_path=dump_dir,   # 保存到当前目录
         pic_name=f"fcs_metrics_{args.alg}.png",  # 指定文件名
         show=False
+    )
+
+    # 绘制MINK曲线，保存并显示
+    plot_log_time_series(
+        data=qla_data,
+        fields=["mink"],
+        colors=["yellow"],
+        labels=["Kmin"],
+        title=f"QLA的平均队列长度(Port {port}, Queue {queue})",
+        save_path=dump_dir,   # 保存到当前目录
+        pic_name=f"MINK_metrics_{args.alg}.png",  # 指定文件名
+        show=False,
+        # vline_step=4,
+        # vline_kwargs={"color": "red", "linestyle": ":", "alpha": 0.6},
+        marker='o',
+        markersize=5,
+        linestyle='--',
     )
 
 if __name__ == "__main__":

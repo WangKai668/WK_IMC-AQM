@@ -235,8 +235,12 @@ public://private:
 			void LambdaOverflowManager(){
 				if(lambda_current<=LAMBDA_MIN){
 					lambda_current=LAMBDA_MIN;
-					MinkAdjuster();
+					// MinkAdjuster();
 					// return;
+				}
+				if(lambda_base<=LAMBDA_MIN){
+					lambda_base=LAMBDA_MIN;
+					MinkAdjuster();
 				}
 			}
 
@@ -301,9 +305,20 @@ public://private:
 					beta*(throughput_avg/bandwidth)+
 					(1-beta)*Phi(q_avg);
 				
-				std::cout<<"[UtilityFunction] throughput_avg: "<<throughput_avg<<" bandwidth: "<<bandwidth<<" q_avg: "<<q_avg
-				<<" beta: "<<beta<<" Phi: "<<Phi(q_avg)<<std::endl
-				<<"    beta: "<<beta<<" * throughput_avg/bandwidth: "<<throughput_avg/bandwidth<<"+ (1-beta)"<< (1-beta)<<" * Phi(q_avg)"<<Phi(q_avg) <<" = "<<" utility: "<<ans<<std::endl;
+				// std::cout<<"[UtilityFunction] throughput_avg: "<<throughput_avg<<" bandwidth: "<<bandwidth<<" q_avg: "<<q_avg
+				// <<" beta: "<<beta<<" Phi: "<<Phi(q_avg)
+				// <<" beta: "<<beta<<" * throughput_avg/bandwidth: "<<throughput_avg/bandwidth<<"+ (1-beta)"<< (1-beta)<<" * Phi(q_avg)"<<Phi(q_avg) <<" = "<<" utility: "<<ans<<std::endl;
+				std::cout<< " throughput_avg: " << throughput_avg
+					<< " bandwidth:  " << bandwidth
+					<< " t_slash_b: " << throughput_avg/bandwidth
+					<< " beta: " << beta
+					<< " beta_t_slash_b: "<< beta*(throughput_avg/bandwidth)
+					<< " one_minus_beta: " << 1-beta
+					<< " q_avg: "<<q_avg
+					<< " Phi: " << Phi(q_avg)
+					<< " one_minus_beta_Phi: "<<(1-beta)*Phi(q_avg)
+					<< " utility: " << ans
+					<< std::endl;
 				return ans;
 			}
 	};

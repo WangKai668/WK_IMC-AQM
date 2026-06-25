@@ -447,7 +447,9 @@ void SwitchNode::SwitchNotifyDequeue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 	m_lastPktTs[ifIndex] = Simulator::Now().GetTimeStep();
 
 	//加入QLA出队字节数统计
-	m_mmu->RecordQlaDequeueBytes(ifIndex, qIndex,p->GetSize());
+	if(m_mmu->aqmMode == PRED){
+		m_mmu->RecordQlaDequeueBytes(ifIndex, qIndex,p->GetSize());
+	}
 }
 
 // 返回是否带 ACK，isPureAck 输出是否为纯 ACK（无 payload）
@@ -535,7 +537,10 @@ void SwitchNode::SwitchNotifyEnqueue(uint32_t ifIndex, uint32_t qIndex, Ptr<Pack
 		SwitchMmu::QlaState &qla = m_mmu->GetQlaState(ifIndex, qIndex);
 
 		m_mmu->RecordQlaPacketStats(ifIndex, qIndex,
-									/*p->GetSize(),*/ qla.phase_qlen_cnt);
+									/*p->GetSize(),*/ 
+									// qla.phase_qlen_cnt
+									m_mmu->GetCurrentQueueLength(ifIndex,qIndex)/1e3
+								);
 
 		// std::cout<<"存储指纹："<<sid<<" "<<fingerPrint<<"\n";
 	}

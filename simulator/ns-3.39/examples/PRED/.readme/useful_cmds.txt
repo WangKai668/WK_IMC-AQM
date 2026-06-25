@@ -8,6 +8,10 @@
     python3 plot-queue-contrast.py
  --dump-dir dump/PRED/MV --alg RED-20260507_225241 --alg1
  PRED-20260511_192255
+
+    python3 plot-queue-contrast.py
+ --dump-dir dump/PRED/RCF/DCTCP --alg PRED-20260524_171000 --alg1
+ CoDel-20260524_171338
     python3 plot-PRED-statics.py --dump-dir dump/PRED/MV --alg PRED-20260511_230139
     python3 plot-2to1.py --dump-dir dump/PRED/PWDCQCN/20t1 --alg RED-L0.2-20260512_163627
 
@@ -18,7 +22,13 @@
 
     python3 plot-2to1.py --dump-dir dump/PRED/LSS --alg SPECIAL-PRED-LSS-2to1-20260519_233110
 
-    bash script-plot.sh dump/PRED/RCF/DCTCP PRED-20260520_121134 17 0 500 10
+    bash script-plot.sh dump/PRED/RCF/DCTCP PRED-20260521_134135 17 0 5 1
+    bash script-plot.sh dump/PRED/RCF/DCQCN PRED-20260521_135301 17 0 5 1
+    bash script-plot.sh dump/PRED/LLF/DCQCN PRED-20260522_155250 5 0 100 1
+    bash script-plot.sh .data/PRED/LLF/DCQCN PRED-20260523_140943 5 0 100 1 -1
+    #新增最后一位：队列长度y轴上限
+    bash script-plot.sh dump/PRED/LLF/DCQCN PRED-20260523_212912 5 0 100 1 -1
+    bash script-plot.sh dump/PRED/SIF/DCQCN/N4_burst0 PRED-20260524_022343 65 0 100 1 -1
     ------------------------------------------------------------------------
     DUMP_DIR=${1:-$DEFAULT_DUMP_DIR}
     POST_FIX=${2:-$DEFAULT_POST_FIX}
@@ -50,8 +60,14 @@
     #LSS场景websearch，128主机，0.1~0.9 step 0.1负载，10G带宽，仿真0.01秒
     #LSS场景websearch，128主机，0.1~0.9 step 0.1负载，10G带宽，仿真0.05秒
     python3 traffic_gen_scene.py -c cdf/websearch.txt -n 128 --load-min 0.1 --load-max 0.9 --load-step 0.1 -b 10G -t 0.05 -s LSS
-    #datamining稍微多跑一会，到0.05秒
-    python3 traffic_gen_scene.py -c cdf/datamining.txt -n 128 --load-min 0.1 --load-max 0.9 --load-step 0.1 -b 10G -t 0.05 -s LSS
+    #datamining稍微多跑一会，到0.1秒
+    python3 traffic_gen_scene.py -c cdf/datamining.txt -n 128 --load-min 0.1 --load-max 0.9 --load-step 0.1 -b 10G -t 0.1 -s LSS
+
+    #memcached少跑一会，0.0001秒（100us）
+    python3 traffic_gen_scene.py -c cdf/memcached.txt -n 128 --load-min 0.1 --load-max 0.9 --load-step 0.1 -b 10G -t 0.0001 -s LSS
+    python3 traffic_gen_scene.py -c cdf/fbhdp.txt -n 128 --load-min 0.1 --load-max 0.9 --load-step 0.1 -b 10G -t 0.01 -s LSS
+    python3 traffic_gen_scene.py -c cdf/googlerpc.txt -n 128 --load-min 0.1 --load-max 0.9 --load-step 0.1 -b 10G -t 0.001 -s LSS
+    python3 traffic_gen_scene.py -c cdf/alistorage.txt -n 128 --load-min 0.1 --load-max 0.9 --load-step 0.1 -b 10G -t 0.01 -s LSS
 
     parser.add_option("-c", "--cdf", dest = "cdf_file", help = "the file of the traffic size cdf", default = "uniform_distribution.txt")
 	parser.add_option("-n", "--nhost", dest = "nhost", help = "number of hosts")

@@ -1861,6 +1861,8 @@ void SwitchMmu::UpdateQlaStatsDrivenByTime(
 		qla.phase_start_ns += Tqla_ns;//启动时间推进一个周期
 		//计算效用值
 		if (qla.phase_qlen_cnt > 0) {
+			// std::cout<<now_ns<<" port: "<<port<<" queue: "<<queue<<" ";
+			std::cout<<now_ns<<" UtilityFunction[port:"<<port<<"][queue:"<<queue<<"]: ";
 			utility=qla.UtilityFunction(
 					qla.getAvgThroughputByTqlaNs(Tqla_ns),
 					bandwidth[port],

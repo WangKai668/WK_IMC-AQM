@@ -1,2 +1,2 @@
-cdf file: cdf/websearch.txt
-nhost: 128, load-min: 0.100000, load-max: 0.900000, load-step: 0.100000, bandwidth: 10000000000.000000, time: 50000000.000000
+cdf file: cdf/alistorage.txt
+nhost: 128, load-min: 0.100000, load-max: 0.900000, load-step: 0.100000, bandwidth: 10000000000.000000, time: 10000000.000000

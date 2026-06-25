@@ -2,6 +2,15 @@ import re
 import argparse
 import matplotlib.pyplot as plt
 
+# 设置中文字体（避免方框乱码）
+# 方案一：使用系统常见中文字体（优先 SimHei/黑体，适用于 Windows/Linux/macOS）
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'Arial Unicode MS']
+# 解决负号显示为方块的问题
+plt.rcParams['axes.unicode_minus'] = False
+
+# 可选：设置字体大小
+plt.rcParams['font.size'] = 20
+
 def parse_args():
     p = argparse.ArgumentParser(description="Plot IMC-AQM logs (2to1)")
     p.add_argument("--alg", default="RED", help="Algorithm name, e.g., RED/PIE/CoDel (default: RED)")
@@ -10,6 +19,8 @@ def parse_args():
     p.add_argument("--high-cut-ms", type=float, default=float('inf'), help="High cut threshold in milliseconds (default: inf)")
     p.add_argument("--step", type=int, default=100, help="Sampling step for plotting (default: 100)")
     p.add_argument("--master-id", default="17", help="Master node ID for queue length parsing (default: 17, means 16 to 1)")   
+    p.add_argument("--queue-ylim", type=float, default=None, 
+               help="Y-axis limits for queue length plot, e.g., --queue-ylim 0 2000")
     return p.parse_args()
 
 args = parse_args()
@@ -42,6 +53,7 @@ queue_lengths = []
 low_cut = 10#截断10ms
 high_cut = 15#截断15ms以上
 # high_cut = float('inf')#不截断
+QLEN_MIN = 0
 
 #采样间隔
 step = 100
@@ -54,6 +66,7 @@ low_cut = args.low_cut_ms
 high_cut = args.high_cut_ms
 step = args.step
 master_id = args.master_id
+QLEN_MAX = args.queue_ylim
 
 # SID="0b000201" #默认发送端口
 SID="0b000101"
@@ -175,6 +188,8 @@ plt.plot(time_queue[::step], queue_lengths[::step], marker="o", linestyle="-", c
 # plt.plot(time_queue, queue_lengths, marker="o", linestyle="-", color="orange", label="Queue Length (KB)")
 plt.xlabel("Time (ms)")
 plt.ylabel("Queue Length (KB)")
+if args.queue_ylim and args.queue_ylim>0:
+    plt.ylim(QLEN_MIN, QLEN_MAX)
 plt.title(f"({args.alg}) Switch Port Queue Length Over Time")
 plt.legend()
 

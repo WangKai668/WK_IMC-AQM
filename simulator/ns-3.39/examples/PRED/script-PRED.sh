@@ -17,6 +17,8 @@ USE_ALGO="PRED"
             # # lambda=2
 
     # MV
+        # 16t1
+        # ENABLE_DCQCN="1"
         # evaluation="MV"
     
     # 2to1
@@ -33,12 +35,11 @@ USE_ALGO="PRED"
     # LLF 长持续流量
         # master_id是5
         # 使用DCQCN
-            # ENABLE_DCQCN="1"
-            # specifier2="DCQCN"
+            ENABLE_DCQCN="1"
+            specifier="DCQCN"
         #使用DCTCP
-            ENABLE_DCQCN="0"
-            specifier2="DCTCP"
-
+            # ENABLE_DCQCN="0"
+            # specifier="DCTCP"
         evaluation="LLF"
     
     # SBF 短突发流量
@@ -46,7 +47,7 @@ USE_ALGO="PRED"
         # 使用DCQCN
             # ENABLE_DCQCN="1"
             # specifier2="DCQCN"
-        # #使用DCTCP
+        # 使用DCTCP
             # ENABLE_DCQCN="0"
             # specifier2="DCTCP"
         # evaluation="SBF"
@@ -55,15 +56,35 @@ USE_ALGO="PRED"
         # master_id是17
         # 使用DCQCN
             # ENABLE_DCQCN="1"
-            # specifier2="DCQCN"
-        # #使用DCTCP
+            # specifier="DCQCN"
+        # 使用DCTCP
             # ENABLE_DCQCN="0"
-            # specifier2="DCTCP"
+            # specifier="DCTCP"
+
+        # USE_ALGO="RED"
         # evaluation="RCF"
 
+    # SIF Sustain+Incast Flow 持续+突发流量场景
+        # master_id是65
+        # 使用DCQCN
+            # ENABLE_DCQCN="1"
+            # specifier="DCQCN"
+        # 使用DCTCP
+            # ENABLE_DCQCN="0"
+            # specifier="DCTCP"
+        # 具体流量
+            # specifier2="N4_burst0"
+            # specifier2="N4_burst2_small_large"
+            # specifier2="N20_burst0"
+            # specifier2="N20_burst2_small_large"
+
+            # specifier2="N10_burst0"
+        # USE_ALGO="RED"
+        # evaluation="SIF"
 
 # PRED算法Config
     if [ "$USE_ALGO" = "PRED" ]; then
+        echo "使用PRED"
         algs=(5)
         if [ -n "$specifier" ]; then
             if [ -n "$specifier2" ]; then
@@ -74,19 +95,35 @@ USE_ALGO="PRED"
         else
             configFile="$NS3/examples/PRED/config-PRED-${evaluation}.txt"
         fi
+        echo "$configFile"
     elif [ "$USE_ALGO" = "RED" ]; then
+        echo "使用RED"
         algs=(0)
         if [ -n "$lambda" ]; then
             configFile="$NS3/examples/PRED/config-RED-L${lambda}-${evaluation}-${specifier}.txt"
         else
             configFile="$NS3/examples/PRED/config-RED-${evaluation}.txt"
         fi
+                if [ -n "$specifier" ]; then
+            if [ -n "$specifier2" ]; then
+                configFile="$NS3/examples/PRED/config-RED-${evaluation}-${specifier}-${specifier2}.txt"
+            else
+                configFile="$NS3/examples/PRED/config-RED-${evaluation}-${specifier}.txt"
+            fi
+        else
+            configFile="$NS3/examples/PRED/config-RED-${evaluation}.txt"
+        fi
+        echo "$configFile"
     fi
 
     #########################################################特殊测试
     ########用codel试试呢
-    algs=(1)
-    echo "强行使用codel"
+    # algs=(1)
+    # echo "强行使用codel"
+
+    # algs=(0)
+    # echo "强行使用RED"
+
     # configFile="$NS3/examples/PRED/config-PRED-LSS-2to1.txt"
     #################################################################
 
@@ -248,19 +285,33 @@ DUMP_DIR=dump/PRED/${evaluation}${specifier:+/$specifier}${specifier2:+/$specifi
 
 LOW_CUT=0
 HIGH_CUT=3999 #单位ms，10分钟
+# HIGH_CUT=10 #单位ms，10ms
+# HIGH_CUT=5 #单位ms，5ms
+
 # STEP=100
-STEP=10
+# STEP=10
+STEP=1
 
 # MASTER_ID=17 # 16打1
 # MASTER_ID=21 # 20打1
 MASTER_ID=5 # 4打1
 # MASTER_ID=3 # 2打1
 # MASTER_ID=15 # 14打1
+# MASTER_ID=65 #64打1
+
+# Y_LIM=-1 #不启用
+# Y_LIM=100
+Y_LIM=50
+# Y_LIM=200
 
 echo "正在绘制图表plot-2to1..."
-time python3 plot-2to1.py --low-cut-ms ${LOW_CUT} --high-cut-ms ${HIGH_CUT} --step ${STEP} --master-id ${MASTER_ID} --dump-dir ${DUMP_DIR} --alg ${POST_FIX}
+bash1="python3 plot-2to1.py --low-cut-ms ${LOW_CUT} --high-cut-ms ${HIGH_CUT} --step ${STEP} --master-id ${MASTER_ID} --dump-dir ${DUMP_DIR} --alg ${POST_FIX} --queue-ylim ${Y_LIM}"
+echo $bash1
+time $bash1
 echo "绘制完毕"
 
 echo "正在绘制图表plot-PRED-statics..."
-time python3 plot-PRED-statics.py --low-cut-ms ${LOW_CUT} --high-cut-ms ${HIGH_CUT} --step ${STEP} --master-id ${MASTER_ID} --dump-dir ${DUMP_DIR} --alg ${POST_FIX}
+bash2="python3 plot-PRED-statics.py --low-cut-ms ${LOW_CUT} --high-cut-ms ${HIGH_CUT} --step ${STEP} --master-id ${MASTER_ID} --dump-dir ${DUMP_DIR} --alg ${POST_FIX}"
+echo $bash2
+time $bash2
 echo "绘制完毕"

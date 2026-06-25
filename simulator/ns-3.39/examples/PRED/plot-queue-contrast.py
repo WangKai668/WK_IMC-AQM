@@ -2,6 +2,15 @@ import re
 import argparse
 import matplotlib.pyplot as plt
 
+# 设置中文字体（避免方框乱码）
+# 方案一：使用系统常见中文字体（优先 SimHei/黑体，适用于 Windows/Linux/macOS）
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'Arial Unicode MS']
+# 解决负号显示为方块的问题
+plt.rcParams['axes.unicode_minus'] = False
+
+# 可选：设置字体大小
+plt.rcParams['font.size'] = 16
+
 def parse_args():
     p = argparse.ArgumentParser(description="Plot IMC-AQM logs (2to1)")
     p.add_argument("--alg", default="RED", help="Algorithm name, e.g., RED/PIE/CoDel (default: RED)")
@@ -40,13 +49,15 @@ time_queue2 = []
 queue_lengths2 = []
 
 #不稳定区域截断
-# low_cut = 0 #把low_cut毫秒以下的内容截断，不包含low_cut本身
-low_cut = 10 #截断10ms
+low_cut = 0 #把low_cut毫秒以下的内容截断，不包含low_cut本身
+# low_cut = 10 #截断10ms
+high_cut = 10
 #采样间隔
-step = 100
+# step = 100
+step = 1
 #主机id
-# master_id = "17" #16打1
-master_id = "21" #20打1
+master_id = "17" #16打1
+# master_id = "21" #20打1
 
 # 解析日志文件
 with open(log_file, "r") as file:
@@ -72,7 +83,7 @@ with open(log_file, "r") as file:
         queue_match = re.search(r"(\d+) SwitchMMU:ShouldSendCN  ifindex "+master_id+r" .* egress_bytes (\d+)", line)
         if queue_match:
             time_temp = int(queue_match.group(1)) / 1e6  # 转换时间单位 ns -> ms
-            if time_temp >= low_cut:  # 截断不稳定的区域
+            if time_temp >= low_cut and time_temp<= high_cut:  # 截断不稳定的区域
                 time_queue.append(time_temp)  # 转换时间单位 ns -> ms
                 queue_lengths.append(int(queue_match.group(2)) / 1024)  # 转换单位 bytes -> KB
 
@@ -88,7 +99,7 @@ with open(log_file1, "r") as file:
         queue_match = re.search(r"(\d+) SwitchMMU:ShouldSendCN  ifindex "+master_id+r" .* egress_bytes (\d+)", line)
         if queue_match:
             time_temp = int(queue_match.group(1)) / 1e6  # 转换时间单位 ns -> ms
-            if time_temp >= low_cut:  # 截断不稳定的区域
+            if time_temp >= low_cut and time_temp<= high_cut:  # 截断不稳定的区域
                 time_queue1.append(time_temp)  # 转换时间单位 ns -> ms
                 queue_lengths1.append(int(queue_match.group(2)) / 1024)  # 转换单位 bytes -> KB
 
@@ -99,7 +110,7 @@ if log_file2:
             queue_match = re.search(r"(\d+) SwitchMMU:ShouldSendCN  ifindex "+master_id+r" .* egress_bytes (\d+)", line)
             if queue_match:
                 time_temp = int(queue_match.group(1)) / 1e6
-                if time_temp >= low_cut:
+                if time_temp >= low_cut and time_temp<= high_cut:
                     time_queue2.append(time_temp)
                     queue_lengths2.append(int(queue_match.group(2)) / 1024)
 

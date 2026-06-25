@@ -143,7 +143,11 @@ class AQMSimulationRunner:
             print(f"[获取LSS标识] 无法从路径 {config_path} 提取 LSS 标识符，使用默认标识符")
             return "LSS_default"
 
-    def run_aqm_simulation_by_easytasks(self,tasks:list[EasyTask]):
+    def run_aqm_simulation_by_easytasks(
+        self,
+        tasks
+            # :list[EasyTask]
+        ):
         """
         并行运行多个仿真任务
         :param tasks: EasyTask 对象列表
@@ -386,13 +390,29 @@ ENDL="\n"
 SCENE_NAME = "LSS"
 
 # DATASET = "websearch"
-DATASET = "datamining"
+# DATASET = "datamining"
+# DATASET = "memcached"
+# DATASET = "fbhdp"
+# DATASET = "googlerpc"
+DATASET = "alistorage"
+
+# WRITE_LOG = True
+WRITE_LOG = False
+
+# CC_ALGO = "DCTCP"
+CC_ALGO = "DCQCN"
 
 load_min = 0.1
 load_max = 0.9
+# load_max = 0.1 #只跑一个看看
+
 load_step = 0.1
 LOADS = frange(load_min, load_max, load_step)
-ALGS = ["PRED", "CoDel"]
+ALGS = [
+    "PRED", 
+    "CoDel", 
+    "RED"
+    ]
 
 # # 补偿未能输出的部分
 # load_min = 0.4
@@ -413,12 +433,12 @@ for load in LOADS:
         TASKS.append(
             EasyTask(
                 aqm_algo=algo,
-                cc_algo="DCTCP",
+                cc_algo=CC_ALGO,
                 dataset=DATASET,
                 config=os.path.join(PRED_DIR, f"config/scene/{SCENE_NAME}/{DATASET}/{load_str}.txt"),
                 output_dir=os.path.join(PRED_DIR, f"dump/PRED/{SCENE_NAME}/{DATASET}/{algo}"),
                 fct_file_dir=os.path.join(FCT_ROOT_DIR, f"{SCENE_NAME}/{DATASET}/{algo}/fct-{load_str}.txt"),
-                write_evaluation_log=False
+                write_evaluation_log=WRITE_LOG
             )
         )
         print(

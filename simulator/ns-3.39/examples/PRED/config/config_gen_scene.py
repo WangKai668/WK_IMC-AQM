@@ -77,10 +77,10 @@ config_basic = {
 
 config_CC = {
     "CC_MODE":                      6,
-    "ALPHA_RESUME_INTERVAL":        1,
-    "RATE_DECREASE_INTERVAL":       4,
+    "ALPHA_RESUME_INTERVAL":        5,#1
+    "RATE_DECREASE_INTERVAL":       50,#4
     "CLAMP_TARGET_RATE":            0,
-    "RP_TIMER":                    900,
+    "RP_TIMER":                    55,#900
     # DCTCP的g参数，改为1/16，0.0625，之前是0.00390625
     # 改成1/8呢？
     "EWMA_GAIN":                   0.0625,
@@ -120,7 +120,7 @@ config_pred_basic = {
 config_LSS = {
     "TOPOLOGY_FILE":        "examples/PRED/topology-LSS.txt",
 
-    "SIMULATOR_STOP_TIME":  0.05,#跑50ms
+    "SIMULATOR_STOP_TIME":  0.05,#跑10ms，0.01
 
     # LSS场景链路时延10us，链路带宽10Gbps
     "LINK_DELAY":           "10us",
@@ -130,6 +130,15 @@ config_LSS = {
     "ONLY_RECEIVER_PORT":   0,
     #接收端portid
     "RECEIVER_PORT_ID":     17,
+}
+
+config_ECN={
+    "KMAX_MAP":                     70,
+    #kmin初始设置为10，这里因为队列长度一直是10480
+    #必须设置一个可以让lambda=2和0.2
+    #在丢包队列上有区分度的kmin，采用10.479（KB）
+    "KMIN_MAP":                     70,
+    "PMAX_MAP":                     1,
 }
 #------------------------组装Config的类----------------------
 class ConfigComposer:
@@ -213,7 +222,19 @@ class SceneHandler:
             # LSS场景包含多个负载点，调整相关参数
             loads = self.frange(0.1, 0.9, 0.1)#先硬编码了吧
             print(f"负载点: {loads}")
-            cdfs = ["datamining","websearch"] # 先硬编码了吧
+            cdfs = [
+                # "datamining",
+                # "websearch",
+                # "memcached",
+                # "fbhdp",
+                # "googlerpc",
+                "alistorage"
+                ] # 先硬编码了吧
+            datamining_stop_time = 0.1 #datamining跑0.1秒
+            memcached_stop_time = 0.0001 #memcached跑100us
+            fbhdp_stop_time = 0.01
+            googlerpc_stop_time = 0.001
+            alistorage_stop_time = 0.01
 
             for cdf in cdfs:
                 # output_path = output_path_prefix+cdf+"/";#config/scene/场景/数据集
@@ -230,11 +251,37 @@ class SceneHandler:
                     # fct_config = {
                     #     "FCT_OUTPUT_FILE" : f"mix/{self.scene_name}/{cdf}/fct-{load}.txt"
                     # }
+                    #####MAN!!!!!!!!###########################################################################################################################################
                     config_composer = ConfigComposer(config_basic)
                     config_composer.add_config_dict(config_CC)
                     config_composer.add_config_dict(config_pred_basic)
                     config_composer.add_config_dict(config_LSS)
                     config_composer.add_config_dict(config_flow_file)
+                    if cdf == "datamining":
+                        print(f"[SceneHandler: process_config]cdf->DATAMINING, sim_stop_time: {datamining_stop_time}")
+                        config_composer.insert_or_update_config("SIMULATOR_STOP_TIME",datamining_stop_time)
+                    elif cdf == "memcached":
+                        print(f"[SceneHandler: process_config]cdf->MEMCACHED, sim_stop_time: {memcached_stop_time}")
+                        config_composer.insert_or_update_config("SIMULATOR_STOP_TIME",memcached_stop_time)
+                    elif cdf == "fbhdp":
+                        print(f"[SceneHandler: process_config]cdf->FBHDP, sim_stop_time: {fbhdp_stop_time}")
+                        config_composer.insert_or_update_config("SIMULATOR_STOP_TIME",fbhdp_stop_time)
+                    elif cdf == "googlerpc":
+                        print(f"[SceneHandler: process_config]cdf->GOOGLERPC, sim_stop_time: {googlerpc_stop_time}")
+                        config_composer.insert_or_update_config("SIMULATOR_STOP_TIME",googlerpc_stop_time)  
+                    elif cdf == "alistorage":
+                        print(f"[SceneHandler: process_config]cdf->ALISTORAGE, sim_stop_time: {alistorage_stop_time}")
+                        config_composer.insert_or_update_config("SIMULATOR_STOP_TIME",alistorage_stop_time)    
+                    else:
+                        print(f'[SceneHandler: process_config]cdf->OTHER, sim_stop_time: {config_LSS["SIMULATOR_STOP_TIME"]}')
+                    
+                    config_composer.add_config_dict(config_ECN)#ECN: MINK=MAXK=70
+                    # config_composer.insert_or_update_config("MINK",100)
+                    
+                    config_composer.insert_or_update_config("MAXK",800)
+                    config_composer.insert_or_update_config("Q_LEFT",50)
+                    config_composer.insert_or_update_config("LAMBDA_DELTA",0.12)#之前0.1
+                    
                     config_dict = config_composer.compose()
 
                     config_writer = ConfigWriter(config_dict)
